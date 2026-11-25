@@ -1,0 +1,30 @@
+# Mẫu cấu hình virtual host bổ sung vào Caddyfile hiện hữu của server cổng thông tin.
+# LƯU Ý: KHÔNG phục vụ file_server công khai cho /srv/tnth-work/uploads!
+# Mọi tệp nội bộ phải đi qua Next.js route /api/v1/files/:id/download đã kiểm tra quyền.
+
+https://work.thanhnientruonghoc.io.vn {
+	tls internal
+
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+	}
+
+	request_body {
+		max_size 110MB
+	}
+
+	reverse_proxy 127.0.0.1:3001 {
+		header_up X-Client-Ip {remote_host}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

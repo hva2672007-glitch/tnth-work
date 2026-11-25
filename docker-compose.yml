@@ -1,0 +1,32 @@
+# Compose độc lập cho Web Phân công Ban Biên tập (tnth-work).
+# KHÔNG mở cổng 80/443 và KHÔNG tạo DB/Caddy thứ hai khi deploy cùng server cổng thông tin.
+# Xem hướng dẫn nối mạng nội bộ với Caddy/Postgres hiện hữu tại docs/RUNBOOK.md.
+name: tnth-work
+
+services:
+  work-web:
+    image: tnth-work:current
+    build: .
+    restart: unless-stopped
+    env_file:
+      - path: .env.production
+        required: false
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache:uid=1000,gid=1000
+    # Kho tệp nội bộ riêng biệt, KHÔNG dùng chung /srv/tnth/uploads và KHÔNG public qua Caddy
+    volumes:
+      - /srv/tnth-work/uploads:/app/uploads
+    ports:
+      - "127.0.0.1:3001:3001"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: "0.75"
+    mem_limit: 768m
+    networks:
+      - work_internal
+
+networks:
+  work_internal:
+    driver: bridge

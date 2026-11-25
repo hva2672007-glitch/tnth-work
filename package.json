@@ -1,0 +1,47 @@
+{
+  "name": "tnth-work",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --port 3001",
+    "build": "next build --webpack",
+    "start": "next start --port 3001",
+    "smoke:http": "node scripts/smoke-http.mjs",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:all": "vitest run",
+    "db:migrate": "node scripts/db-migrate.mjs",
+    "db:seed": "node scripts/db-seed.mjs",
+    "db:seed:demo": "node scripts/db-seed.mjs --demo",
+    "jobs:run": "node scripts/jobs-run.mjs",
+    "bootstrap:head": "node scripts/bootstrap-head.mjs"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.14",
+    "clsx": "^2.1.1",
+    "exceljs": "^4.4.0",
+    "lucide-react": "^0.511.0",
+    "next": "16.1.6",
+    "pg": "^8.16.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "recharts": "^2.15.3",
+    "tailwind-merge": "^3.3.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^22",
+    "@types/pg": "^8.15.0",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.6",
+    "tailwindcss": "^4",
+    "tsx": "^4.19.4",
+    "typescript": "^5",
+    "vitest": "^3.1.4"
+  }
+}
