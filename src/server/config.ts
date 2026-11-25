@@ -1,6 +1,6 @@
 import path from "node:path";
 
-export type AppEnv = "development" | "test" | "production";
+export type AppEnv = "development" | "test" | "preview" | "production";
 export type PortalAuthMode = "mock" | "sso" | "bridge";
 
 export interface AppConfig {
@@ -35,20 +35,29 @@ function intEnv(name: string, fallback: number): number {
 export function getConfig(): AppConfig {
   const rawEnv = (process.env.APP_ENV || process.env.NODE_ENV || "development").toLowerCase();
   const appEnv: AppEnv =
-    rawEnv === "production" ? "production" : rawEnv === "test" ? "test" : "development";
+    rawEnv === "production"
+      ? "production"
+      : rawEnv === "preview"
+        ? "preview"
+        : rawEnv === "test"
+          ? "test"
+          : "development";
 
   const databaseUrl =
     process.env.DATABASE_URL ||
-    (appEnv === "test" ? "pglite://memory" : "pglite://./.data/pglite");
+    (appEnv === "test"
+      ? "pglite://memory"
+      : appEnv === "preview"
+        ? "pglite:///tmp/tnth-work-pglite"
+        : "pglite://./.data/pglite");
 
   const portalAuthMode = (process.env.PORTAL_AUTH_MODE ||
     (appEnv === "production" ? "sso" : "mock")) as PortalAuthMode;
 
-  const isProd = appEnv === "production" || process.env.NODE_ENV === "production";
-
   // Ràng buộc an toàn production theo mục 4.2 & 15.3:
-  // Không bao giờ cho phép mock auth hoặc pglite ở production.
-  if (isProd) {
+  // Khi APP_ENV=production (hoặc không đặt APP_ENV mà NODE_ENV=production), cấm tuyệt đối mock auth và pglite.
+  // Chỉ chế độ preview tường minh (APP_ENV=preview) mới được chạy bản xem thử có dữ liệu mẫu.
+  if (appEnv === "production") {
     if (portalAuthMode === "mock") {
       throw new Error("SECURITY_CONFIG_ERROR: PORTAL_AUTH_MODE=mock bị cấm trong môi trường production.");
     }

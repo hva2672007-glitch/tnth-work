@@ -25,9 +25,11 @@ COPY --from=builder --chown=node:node /app/.next/standalone ./
 COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 COPY --from=builder --chown=node:node /app/db ./db
 COPY --from=builder --chown=node:node /app/scripts ./scripts
+# Bảo đảm gói WASM của PGlite có mặt khi chạy chế độ APP_ENV=preview (chặn cứng ở production)
+COPY --from=deps --chown=node:node /app/node_modules/@electric-sql ./node_modules/@electric-sql
 
 USER node
 EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:3001/api/v1/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 3001) + '/api/v1/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "server.js"]

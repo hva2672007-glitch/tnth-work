@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: tnth-work-preview
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /api/v1/health/live
+    envVars:
+      - key: APP_ENV
+        value: preview
+      - key: PORTAL_AUTH_MODE
+        value: mock
+      - key: DATABASE_URL
+        value: pglite:///tmp/tnth-work-pglite
+      - key: UPLOAD_DIR
+        value: /tmp/tnth-work-uploads
+      - key: TZ
+        value: Asia/Ho_Chi_Minh

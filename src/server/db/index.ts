@@ -3,6 +3,7 @@ import path from "node:path";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import type { PGlite } from "@electric-sql/pglite";
 import { getConfig } from "@/server/config";
+import { bootstrapPreviewPglite } from "@/server/db/preview-bootstrap";
 
 export interface DbClient {
   query<T extends QueryResultRow = QueryResultRow>(
@@ -44,6 +45,9 @@ async function getPglite(url: string): Promise<PGlite> {
       instance = new PGliteCtor(resolved);
     }
     await instance.waitReady;
+    if (getConfig().appEnv === "preview") {
+      await bootstrapPreviewPglite(instance);
+    }
     state.pglite = instance;
     return instance;
   })();
