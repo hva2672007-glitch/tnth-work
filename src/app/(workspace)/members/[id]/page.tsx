@@ -6,12 +6,28 @@ import Link from "next/link";
 import { ArrowLeft, Save, Upload } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { RoleBadge, StatusBadge } from "@/components/badges";
+import {
+  AcademicAchievementsField,
+  EducationTimelineField,
+  SocialLinksField,
+  YouthAchievementsField,
+} from "@/components/profile-structured-fields";
 import { ROLE_LABELS, TEAM_TITLE_LABELS, type ActivityStatus, type MemberRole, type TeamTitle } from "@/lib/constants";
 import { formatVnDateTime } from "@/lib/date";
+import {
+  parseAchievementLines,
+  parseEducationRecord,
+  parseSocialRecord,
+  serializeAchievementLines,
+  serializeEducationEntry,
+  type EducationEntry,
+  type SocialEntry,
+} from "@/lib/profile-formatters";
 
 interface MemberDetailData {
   id: string;
   memberCode: string;
+  provider?: string;
   externalAccountId: string;
   username: string;
   displayName: string;
@@ -47,7 +63,7 @@ export default function MemberDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Editable form state (đủ 100% trường hồ sơ trong Word gốc)
+  // Editable form state (đủ 100% trường hồ sơ + nhập liệu trực quan theo mẫu cú pháp chuẩn)
   const [fullName, setFullName] = useState("");
   const [avatarFileId, setAvatarFileId] = useState<string | null>(null);
   const [dob, setDob] = useState("");
@@ -55,11 +71,11 @@ export default function MemberDetailPage() {
   const [hometown, setHometown] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  const [socialText, setSocialText] = useState("");
+  const [socialEntries, setSocialEntries] = useState<SocialEntry[]>([]);
   const [currentOrg, setCurrentOrg] = useState("");
-  const [educationText, setEducationText] = useState("");
-  const [academicAchievements, setAcademicAchievements] = useState("Chưa có");
-  const [youthAchievements, setYouthAchievements] = useState("Chưa có");
+  const [educationEntries, setEducationEntries] = useState<EducationEntry[]>([]);
+  const [academicItems, setAcademicItems] = useState<string[]>([]);
+  const [youthItems, setYouthItems] = useState<string[]>([]);
   const [joinedOn, setJoinedOn] = useState("");
 
   const load = useCallback(async () => {
@@ -74,13 +90,11 @@ export default function MemberDetailPage() {
         setHometown(res.profile.hometown);
         setEmail(res.profile.email);
         setPhone(res.profile.phone);
-        setSocialText(res.profile.socialLinks.map((s) => `${s.platform}: ${s.handle}`).join("\n"));
+        setSocialEntries((res.profile.socialLinks ?? []).map(parseSocialRecord));
         setCurrentOrg(res.profile.currentOrg);
-        setEducationText(
-          res.profile.education.map((e) => `${e.period} | ${e.school}${e.major ? ` | ${e.major}` : ""}`).join("\n"),
-        );
-        setAcademicAchievements(res.profile.academicAchievements || "Chưa có");
-        setYouthAchievements(res.profile.youthAchievements || "Chưa có");
+        setEducationEntries((res.profile.education ?? []).map(parseEducationRecord));
+        setAcademicItems(parseAchievementLines(res.profile.academicAchievements));
+        setYouthItems(parseAchievementLines(res.profile.youthAchievements));
         setJoinedOn(res.profile.joinedOn);
       }
       setError(null);
@@ -120,23 +134,16 @@ export default function MemberDetailPage() {
     setError(null);
     setNotice(null);
     try {
-      const socialLinks = socialText
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const [platform, ...rest] = line.split(":");
-          return { platform: (platform || "MXH").trim(), handle: rest.join(":").trim() || platform.trim() };
-        });
+      const socialLinks = socialEntries
+        .filter((s) => s.handle.trim())
+        .map((s) => ({
+          platform: s.platform === "Khác" ? s.customPlatform.trim() || "Khác" : s.platform,
+          handle: s.handle.trim(),
+        }));
 
-      const education = educationText
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((line) => {
-          const [period, school, major] = line.split("|").map((s) => s.trim());
-          return { period: period || "", school: school || period || "", major: major || "" };
-        });
+      const education = educationEntries
+        .filter((e) => e.fromYear.trim() || e.toYear.trim() || e.place.trim())
+        .map(serializeEducationEntry);
 
       await apiFetch(`/api/v1/members/${id}/profile`, {
         method: "PATCH",
@@ -151,8 +158,8 @@ export default function MemberDetailPage() {
           socialLinks,
           currentOrg,
           education,
-          academicAchievements,
-          youthAchievements,
+          academicAchievements: serializeAchievementLines(academicItems),
+          youthAchievements: serializeAchievementLines(youthItems),
           joinedOn: joinedOn || null,
         }),
       });
@@ -199,7 +206,8 @@ export default function MemberDetailPage() {
             <StatusBadge status={data.activityStatus} kind="activity" />
           </div>
           <p className="text-xs text-slate-500">
-            {data.memberCode} · Tài khoản nguồn: @{data.username} (ID #{data.externalAccountId}) · {ROLE_LABELS[data.role].name}
+            {data.memberCode} · {data.provider === "local" ? "Tài khoản nội bộ" : "Tài khoản nguồn"}: @{data.username} ·{" "}
+            {ROLE_LABELS[data.role].name}
           </p>
         </div>
 
@@ -271,8 +279,11 @@ export default function MemberDetailPage() {
         </div>
       </section>
 
-      {/* Form đầy đủ trường gốc trong Word */}
+      {/* Thông tin cá nhân cơ bản */}
       <section className="grid gap-4 rounded-xl border border-slate-200 bg-white p-5 sm:grid-cols-2">
+        <div className="sm:col-span-2">
+          <h2 className="text-sm font-bold text-slate-900">Thông tin cá nhân &amp; liên hệ</h2>
+        </div>
         <div>
           <label className="mb-1 block text-xs font-semibold text-slate-700">Họ và tên *</label>
           <input disabled={!canEdit} value={fullName} onChange={(e) => setFullName(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50" />
@@ -305,22 +316,35 @@ export default function MemberDetailPage() {
           <label className="mb-1 block text-xs font-semibold text-slate-700">Ngày bắt đầu công tác tại Ban</label>
           <input disabled={!canEdit} type="date" value={joinedOn} onChange={(e) => setJoinedOn(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50" />
         </div>
-        <div className="sm:col-span-2">
-          <label className="mb-1 block text-xs font-semibold text-slate-700">Mạng xã hội (mỗi dòng định dạng Nền tảng: Link/Tài khoản)</label>
-          <textarea disabled={!canEdit} rows={2} value={socialText} onChange={(e) => setSocialText(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50" />
+
+        <div className="border-t border-slate-100 pt-4 sm:col-span-2">
+          <SocialLinksField items={socialEntries} onChange={setSocialEntries} disabled={!canEdit} />
         </div>
-        <div className="sm:col-span-2">
-          <label className="mb-1 block text-xs font-semibold text-slate-700">Quá trình học tập (mỗi dòng: Giai đoạn | Trường | Ngành)</label>
-          <textarea disabled={!canEdit} rows={2} value={educationText} onChange={(e) => setEducationText(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50" />
+      </section>
+
+      {/* Quá trình học tập, công tác (dạng từng giai đoạn) */}
+      <section className="rounded-xl border border-slate-200 bg-white p-5">
+        <EducationTimelineField items={educationEntries} onChange={setEducationEntries} disabled={!canEdit} />
+      </section>
+
+      {/* Thành tích học tập / NCKH & Thành tích công tác Đoàn (theo mẫu cú pháp chuẩn) */}
+      <section className="space-y-6 rounded-xl border border-slate-200 bg-white p-5">
+        <AcademicAchievementsField items={academicItems} onChange={setAcademicItems} disabled={!canEdit} />
+        <div className="border-t border-slate-100 pt-5">
+          <YouthAchievementsField items={youthItems} onChange={setYouthItems} disabled={!canEdit} />
         </div>
-        <div className="sm:col-span-2">
-          <label className="mb-1 block text-xs font-semibold text-slate-700">Thành tích học tập / nghiên cứu khoa học</label>
-          <textarea disabled={!canEdit} rows={2} value={academicAchievements} onChange={(e) => setAcademicAchievements(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50" />
-        </div>
-        <div className="sm:col-span-2">
-          <label className="mb-1 block text-xs font-semibold text-slate-700">Thành tích công tác Đoàn và phong trào thanh thiếu nhi</label>
-          <textarea disabled={!canEdit} rows={2} value={youthAchievements} onChange={(e) => setYouthAchievements(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50" />
-        </div>
+        {canEdit && (
+          <div className="flex justify-end border-t border-slate-100 pt-4">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => void handleSave()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              <Save className="h-4 w-4" /> {saving ? "Đang lưu..." : "Lưu toàn bộ hồ sơ"}
+            </button>
+          </div>
+        )}
       </section>
 
       {/* Việc đang mở & lịch sử chức vụ */}

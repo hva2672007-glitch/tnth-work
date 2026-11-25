@@ -17,8 +17,8 @@ const ProfilePatchSchema = z.object({
   socialLinks: z.array(z.object({ platform: z.string().min(1), handle: z.string().min(1) })).optional(),
   currentOrg: z.string().max(250).optional(),
   education: z.array(z.object({ period: z.string(), school: z.string(), major: z.string().optional() })).optional(),
-  academicAchievements: z.string().max(2000).optional(),
-  youthAchievements: z.string().max(2000).optional(),
+  academicAchievements: z.string().max(6000).optional(),
+  youthAchievements: z.string().max(6000).optional(),
   joinedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().or(z.literal("")).optional(),
 });
 

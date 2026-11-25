@@ -8,6 +8,13 @@ import { assertNoDependencyCycle } from "@/server/missions/workflow";
 import { evaluateApprovalVotes } from "@/server/approvals/service";
 import { sanitizeExcelCell } from "@/server/reports/excel";
 import { validateFileBuffer } from "@/server/storage/local-storage";
+import {
+  formatAcademicAchievement,
+  formatEducationPreview,
+  formatYouthAchievement,
+  parseEducationRecord,
+  parseSocialRecord,
+} from "@/lib/profile-formatters";
 
 function makeActor(overrides: Partial<AuthActor>): AuthActor {
   return {
@@ -208,5 +215,52 @@ describe("Đồ thị phụ thuộc, Đồng xác nhận, Excel & Bảo mật t�
     expect(() => validateFileBuffer(Buffer.from("echo hi"), "run.sh", "SUBMISSION")).toThrow();
     expect(() => validateFileBuffer(Buffer.from("not a pdf"), "fake.pdf", "SUBMISSION")).toThrow();
     expect(() => validateFileBuffer(Buffer.from("%PDF-1.7\ncontent"), "ok.pdf", "SUBMISSION")).not.toThrow();
+  });
+
+  it("định dạng chuẩn hồ sơ thành viên: Quá trình học tập/công tác, Mạng xã hội và mẫu cú pháp thành tích", () => {
+    const parsedEdu = parseEducationRecord({ period: "2021-2025", school: "ĐH Ngoại thương", major: "Kinh tế" });
+    expect(parsedEdu).toEqual({ fromYear: "2021", toYear: "2025", place: "ĐH Ngoại thương", detail: "Kinh tế" });
+    expect(formatEducationPreview(parsedEdu)).toBe("Từ 2021 đến 2025: ĐH Ngoại thương (Kinh tế)");
+
+    expect(parseSocialRecord({ platform: "locket", handle: "@minh.locket" })).toEqual({
+      platform: "Locket",
+      customPlatform: "",
+      handle: "@minh.locket",
+    });
+
+    const youthLine = formatYouthAchievement({
+      kind: "COMMENDATION",
+      awardType: "Giấy khen",
+      content: "công tác Đoàn và phong trào thanh niên trường học",
+      schoolYear: "2025 - 2026",
+      level: "Xã, Phường",
+      docType: "Quyết định",
+      docNumber: "66",
+      issuer: "BTV Đoàn phường",
+      issueDate: "2026-07-28",
+    });
+    expect(youthLine).toContain("Được tặng Giấy khen có thành tích xuất sắc");
+    expect(youthLine).toContain("(Quyết định số 66 do BTV Đoàn phường cấp ngày 28/07/2026)");
+
+    const journalLine = formatAcademicAchievement({
+      kind: "JOURNAL",
+      prize: "",
+      scope: "",
+      field: "",
+      title: "Chuyển đổi số giáo dục",
+      level: "",
+      schoolYear: "",
+      authorRole: "Tác giả chính",
+      venue: "Tạp chí Giáo dục",
+      issueOrCode: "Số 12",
+      yearOrDate: "2026",
+      docType: "",
+      docNumber: "",
+      issuer: "",
+      issueDate: "",
+    });
+    expect(journalLine).toBe(
+      'Bài đăng tạp chí chuyên ngành: "Chuyển đổi số giáo dục", Vai trò: Tác giả chính, đăng trên Tạp chí Giáo dục (Số 12), năm 2026',
+    );
   });
 });
