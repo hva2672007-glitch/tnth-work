@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertCircle, ShieldCheck, UserCheck } from "lucide-react";
+import { AlertCircle, KeyRound, ShieldCheck, UserCheck } from "lucide-react";
 import { apiFetch, ApiClientError } from "@/lib/api-client";
 import { ROLE_LABELS, type MemberRole } from "@/lib/constants";
 
@@ -23,6 +23,11 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(true);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Đăng nhập bằng tài khoản nội bộ trực tiếp (CTV / thành viên không còn Đoàn trực thuộc)
+  const [localUsername, setLocalUsername] = useState("");
+  const [localPassword, setLocalPassword] = useState("");
+  const [localSubmitting, setLocalSubmitting] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -65,6 +70,31 @@ export default function LoginPage() {
     }
   };
 
+  const handleLocalLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!localUsername.trim() || !localPassword) return;
+    setError(null);
+    setLocalSubmitting(true);
+    try {
+      await apiFetch("/api/v1/auth/local-login", {
+        method: "POST",
+        body: JSON.stringify({
+          username: localUsername.trim().toLowerCase(),
+          password: localPassword,
+        }),
+      });
+      router.replace("/");
+    } catch (err) {
+      if (err instanceof ApiClientError) {
+        setError(err.message);
+      } else {
+        setError("Đăng nhập tài khoản nội bộ thất bại.");
+      }
+    } finally {
+      setLocalSubmitting(false);
+    }
+  };
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-100 via-blue-50 to-slate-100 p-4">
       <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-lg sm:p-8">
@@ -77,7 +107,7 @@ export default function LoginPage() {
               Web Phân công Ban Biên tập — Thanh niên Trường học
             </h1>
             <p className="text-sm text-slate-500">
-              01 tài khoản thanhnientruonghoc.io.vn · Chỉ dành cho thành viên được cấp quyền nội bộ
+              Tài khoản thanhnientruonghoc.io.vn hoặc tài khoản nội bộ được Trưởng Ban cấp
             </p>
           </div>
         </div>
@@ -91,72 +121,112 @@ export default function LoginPage() {
 
         {loading ? (
           <div className="py-12 text-center text-sm text-slate-500">Đang tải cấu hình đăng nhập...</div>
-        ) : authMode === "mock" ? (
-          <div className="mt-6">
-            <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              <strong>Môi trường phát triển (DEV MOCK):</strong> Chọn một tài khoản cổng thông tin mô phỏng để kiểm thử
-              xác thực, phân quyền 5 cấp bậc và cơ chế chặn tài khoản chưa được cấp quyền / bị khóa.
-            </div>
-            <div className="grid gap-2.5 sm:grid-cols-2">
-              {accounts.map((acc) => (
-                <button
-                  key={acc.externalAccountId}
-                  type="button"
-                  disabled={submittingId !== null}
-                  onClick={() => handleMockLogin(acc.externalAccountId)}
-                  className={`flex flex-col rounded-xl border p-3 text-left transition-all ${
-                    acc.hasWorkAccess && acc.status === "ACTIVE"
-                      ? "border-slate-200 bg-white hover:border-blue-400 hover:bg-blue-50/40"
-                      : "border-dashed border-slate-200 bg-slate-50 hover:border-red-300"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-semibold text-slate-900">{acc.displayName}</span>
-                    {acc.workRole ? (
-                      <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[11px] font-medium text-blue-800">
-                        {ROLE_LABELS[acc.workRole].code}
-                      </span>
-                    ) : (
-                      <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[11px] text-slate-600">
-                        Chưa cấp quyền
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
-                    <span>@{acc.username}</span>
-                    <span
-                      className={
-                        acc.status === "ACTIVE" ? "text-emerald-700" : "font-medium text-red-600"
-                      }
-                    >
-                      Nguồn: {acc.status}
-                    </span>
-                  </div>
-                  {submittingId === acc.externalAccountId && (
-                    <span className="mt-1 text-xs font-medium text-blue-600">Đang đăng nhập...</span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
         ) : (
-          <div className="mt-6 space-y-4">
-            <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
-              <div className="flex items-center gap-2 font-semibold">
-                <ShieldCheck className="h-5 w-5" />
-                Đăng nhập bằng tài khoản Cổng thông tin Thanh niên Trường học
+          <div className="mt-6 space-y-6">
+            {authMode === "mock" ? (
+              <div>
+                <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  <strong>Môi trường phát triển / Demo:</strong> Chọn nhanh một tài khoản cổng thông tin mô phỏng để kiểm thử
+                  phân quyền 5 cấp bậc, hoặc dùng khung <em>Tài khoản nội bộ</em> bên dưới.
+                </div>
+                <div className="grid gap-2.5 sm:grid-cols-2">
+                  {accounts.map((acc) => (
+                    <button
+                      key={acc.externalAccountId}
+                      type="button"
+                      disabled={submittingId !== null}
+                      onClick={() => handleMockLogin(acc.externalAccountId)}
+                      className={`flex flex-col rounded-xl border p-3 text-left transition-all ${
+                        acc.hasWorkAccess && acc.status === "ACTIVE"
+                          ? "border-slate-200 bg-white hover:border-blue-400 hover:bg-blue-50/40"
+                          : "border-dashed border-slate-200 bg-slate-50 hover:border-red-300"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-semibold text-slate-900">{acc.displayName}</span>
+                        {acc.workRole ? (
+                          <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[11px] font-medium text-blue-800">
+                            {ROLE_LABELS[acc.workRole].code}
+                          </span>
+                        ) : (
+                          <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[11px] text-slate-600">
+                            Chưa cấp quyền
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
+                        <span>@{acc.username}</span>
+                        <span
+                          className={
+                            acc.status === "ACTIVE" ? "text-emerald-700" : "font-medium text-red-600"
+                          }
+                        >
+                          Nguồn: {acc.status}
+                        </span>
+                      </div>
+                      {submittingId === acc.externalAccountId && (
+                        <span className="mt-1 text-xs font-medium text-blue-600">Đang đăng nhập...</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <p className="mt-1 text-xs text-blue-800">
-                Hệ thống sử dụng chung tài khoản đã đăng ký tại thanhnientruonghoc.io.vn. Không tạo mật khẩu thứ hai.
+            ) : (
+              <div className="space-y-4">
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <ShieldCheck className="h-5 w-5" />
+                    Đăng nhập bằng tài khoản Cổng thông tin Thanh niên Trường học
+                  </div>
+                  <p className="mt-1 text-xs text-blue-800">
+                    Dành cho thành viên đã đăng ký tài khoản tại thanhnientruonghoc.io.vn. Không cần tạo mật khẩu thứ hai.
+                  </p>
+                </div>
+                <a
+                  href="/api/v1/auth/start"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow hover:bg-blue-700"
+                >
+                  <UserCheck className="h-4 w-4" />
+                  Tiếp tục với tài khoản thanhnientruonghoc.io.vn
+                </a>
+              </div>
+            )}
+
+            {/* Khung đăng nhập cho tài khoản nội bộ trực tiếp (CTV / thành viên không còn Đoàn trực thuộc) */}
+            <div className="border-t border-slate-200 pt-5">
+              <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                <KeyRound className="h-4 w-4 text-indigo-600" />
+                Đăng nhập bằng tài khoản nội bộ
+              </div>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Dành cho thành viên / cộng tác viên không thuộc Đoàn trực thuộc được Trưởng Ban cấp tài khoản nội bộ trực tiếp.
               </p>
+              <form onSubmit={handleLocalLogin} className="mt-3 grid gap-2.5 sm:grid-cols-3">
+                <input
+                  type="text"
+                  value={localUsername}
+                  onChange={(e) => setLocalUsername(e.target.value)}
+                  placeholder="Tên đăng nhập..."
+                  autoComplete="username"
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                />
+                <input
+                  type="password"
+                  value={localPassword}
+                  onChange={(e) => setLocalPassword(e.target.value)}
+                  placeholder="Mật khẩu..."
+                  autoComplete="current-password"
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={localSubmitting || !localUsername.trim() || !localPassword}
+                  className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {localSubmitting ? "Đang xác thực..." : "Đăng nhập nội bộ"}
+                </button>
+              </form>
             </div>
-            <a
-              href="/api/v1/auth/start"
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow hover:bg-blue-700"
-            >
-              <UserCheck className="h-4 w-4" />
-              Tiếp tục với tài khoản thanhnientruonghoc.io.vn
-            </a>
           </div>
         )}
       </div>

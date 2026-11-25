@@ -1,8 +1,9 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import ExcelJS from "exceljs";
 import { execSql, query, resetDbForTests } from "@/server/db";
+import { verifyPassword } from "@/server/auth/password";
 import {
   createSessionForMember,
   loadActorByMemberId,
@@ -14,12 +15,26 @@ import {
   setMockPortalAccountStatus,
   setMockPortalSourceDown,
 } from "@/server/auth/portal-adapter";
-import { grantMemberAccess, revokeMemberAccess, updateMemberProfile } from "@/server/members/service";
 import {
+  changeOwnLocalPassword,
+  createLocalMember,
+  getMembersWorkload,
+  grantMemberAccess,
+  listMembersDirectory,
+  resetLocalMemberPassword,
+  revokeMemberAccess,
+  updateMemberProfile,
+} from "@/server/members/service";
+import {
+  addTaskToMission,
+  assignTaskMembers,
   assignmentAction,
   createMission,
   getMissionDetail,
+  getMyWork,
   missionLifecycleAction,
+  requestDeadlineExtension,
+  resolveDeadlineExtension,
   updateMission,
 } from "@/server/missions/workflow";
 import {
@@ -61,8 +76,11 @@ async function setupSeededMemoryDb() {
   process.env.UPLOAD_DIR = "/tmp/tnth-work-test-uploads";
 
   await resetDbForTests();
-  const sql = readFileSync(path.resolve(process.cwd(), "db/migrations/0001_init_schema.sql"), "utf8");
-  await execSql(sql);
+  const migrationsDir = path.resolve(process.cwd(), "db/migrations");
+  for (const file of readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort()) {
+    const sql = readFileSync(path.join(migrationsDir, file), "utf8");
+    await execSql(sql);
+  }
 
   for (const t of SEED_TEAMS) {
     await query("INSERT INTO teams (code, name, sort_order) VALUES ($1, $2, $3)", [t.code, t.name, t.sort_order]);
@@ -399,5 +417,275 @@ describe("Integration End-to-End theo kịch bản mục 18.3", () => {
     expect(wb.getWorksheet("Task & phân công")).toBeDefined();
     expect(wb.getWorksheet("KPI cá nhân")).toBeDefined();
     expect(wb.getWorksheet("Điểm nghẽn")).toBeDefined();
+  });
+
+  it("Kịch bản 11: Nhiều kênh đăng tải tùy chỉnh (OTHER), luồng giao 2 cấp qua Tổ trưởng (Bậc 03), tách task và báo cáo tải nhân sự theo phạm vi quyền", async () => {
+    const otherCh = await query<{ id: string }>("SELECT id FROM publication_channels WHERE code = 'OTHER'");
+    const otherChannelId = otherCh[0].id;
+    const deadlineFuture = new Date(Date.now() + 48 * 3600_000).toISOString();
+
+    // 1. Phó Ban (Bậc 02) tạo mission với 2 trang khác tùy chỉnh (kèm 1 bản trùng hoa/thường để test dedupe)
+    //    và 2 task: Task 1 giao cho Tổ Nội dung (không chọn mem -> chờ Lead phân công); Task 2 giao trực tiếp cho Lead Nội dung
+    const created = await createMission(deputy, {
+      groupId: groupAId,
+      title: "Chiến dịch phối hợp nhiều trang và giao qua Tổ trưởng",
+      description: "Kiểm thử thêm nhiều trang khác + giao 2 cấp qua Bậc 03 + xem tải nhân sự",
+      ownerId: deputy.memberId,
+      deadline: deadlineFuture,
+      completionMode: "TASKS_AND_PUBLICATIONS",
+      publicationChannels: [
+        { channelId: otherChannelId, customChannelName: "Fanpage Hội Sinh viên Việt Nam", required: true, requiredCount: 1 },
+        { channelId: otherChannelId, customChannelName: "YouTube Thanh niên Trường học", required: true, requiredCount: 1 },
+        { channelId: otherChannelId, customChannelName: "fanpage hội sinh viên việt nam", required: true, requiredCount: 1 },
+      ],
+      tasks: [
+        { tempKey: "t1", title: "Bài viết tổng hợp (chờ Lead phân công)", ownerTeamId: teamNdId, deadline: deadlineFuture, weight: 2, assigneeIds: [] },
+        { tempKey: "t2", title: "Bài phỏng vấn (giao thẳng Lead để chia)", ownerTeamId: teamNdId, deadline: deadlineFuture, weight: 2, assigneeIds: [leadNd.memberId] },
+      ],
+    });
+
+    const detail = await getMissionDetail(leadNd, created.id);
+    // Đúng 2 kênh tùy chỉnh sau dedupe
+    expect(detail.publications.length).toBe(2);
+    expect(detail.publications.map((p) => p.channelName).sort()).toEqual([
+      "Khác: Fanpage Hội Sinh viên Việt Nam",
+      "Khác: YouTube Thanh niên Trường học",
+    ]);
+
+    const t1 = detail.tasks.find((t) => t.title.includes("chờ Lead phân công"))!;
+    const t2 = detail.tasks.find((t) => t.title.includes("giao thẳng Lead"))!;
+    expect(t1.canManageTask).toBe(true);
+    expect(t1.assignments.length).toBe(0);
+
+    // Lead Nội dung thấy Task 1 trong delegationQueue và có thông báo TASK_AWAITING_DELEGATION; Lead Media KHÔNG thấy
+    const myWorkLeadNd = await getMyWork(leadNd);
+    expect(myWorkLeadNd.delegationQueue.some((d) => d.taskId === t1.id)).toBe(true);
+    const myWorkLeadMedia = await getMyWork(leadMedia);
+    expect(myWorkLeadMedia.delegationQueue.some((d) => d.taskId === t1.id)).toBe(false);
+
+    const notifRows = await query<{ event_type: string }>(
+      `SELECT event_type FROM notifications WHERE recipient_id = $1 AND target_id = $2`,
+      [leadNd.memberId, created.id],
+    );
+    expect(notifRows.some((n) => n.event_type === "TASK_AWAITING_DELEGATION")).toBe(true);
+
+    // Bảo mật: Lead Media hoặc MEMBER KHÔNG được phân công vào task của Tổ Nội dung
+    await expect(assignTaskMembers(leadMedia, t1.id, { memberIds: [memMedia.memberId] })).rejects.toMatchObject({ status: 403 });
+    await expect(assignTaskMembers(memNd, t1.id, { memberIds: [memNd.memberId] })).rejects.toMatchObject({ status: 403 });
+    // Lead Nội dung cũng KHÔNG được gán mem của Tổ Media vào task của Tổ Nội dung
+    await expect(assignTaskMembers(leadNd, t1.id, { memberIds: [memMedia.memberId] })).rejects.toMatchObject({ status: 403 });
+
+    // Lead Nội dung phân công Task 1 cho memNd
+    await assignTaskMembers(leadNd, t1.id, { memberIds: [memNd.memberId], note: "Em triển khai nhé" });
+    const myWorkLeadNdAfter = await getMyWork(leadNd);
+    expect(myWorkLeadNdAfter.delegationQueue.some((d) => d.taskId === t1.id)).toBe(false);
+
+    // Lead Nội dung giao tiếp Task 2 (vốn giao thẳng cho Lead) xuống memNd -> assignment của Lead chuyển TRANSFERRED
+    const leadT2Ass = t2.assignments.find((a) => a.memberId === leadNd.memberId)!;
+    await assignTaskMembers(leadNd, t2.id, {
+      memberIds: [memNd.memberId],
+      replaceAssignmentIds: [leadT2Ass.id],
+      note: "Giao tiếp từ Tổ trưởng xuống thành viên",
+    });
+    const detailAfterDelegate = await getMissionDetail(leadNd, created.id);
+    const t2After = detailAfterDelegate.tasks.find((t) => t.id === t2.id)!;
+    expect(t2After.assignments.find((a) => a.id === leadT2Ass.id)?.status).toBe("TRANSFERRED");
+    expect(t2After.assignments.some((a) => a.memberId === memNd.memberId && a.status === "PENDING")).toBe(true);
+
+    // Lead Nội dung tách thêm 1 task mới trong tổ mình; bị chặn nếu cố tách sang Tổ Media
+    await expect(
+      addTaskToMission(leadNd, created.id, {
+        title: "Task sai tổ",
+        ownerTeamId: teamMediaId,
+        deadline: deadlineFuture,
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+
+    const splitTask = await addTaskToMission(leadNd, created.id, {
+      title: "Rà soát câu chữ trước đăng",
+      ownerTeamId: teamNdId,
+      deadline: deadlineFuture,
+      weight: 1,
+      assigneeIds: [memNd.memberId],
+    });
+    expect(splitTask.code).toMatch(/-T3$/);
+
+    // Kiểm tra báo cáo tải nhân sự (getMembersWorkload) & phân quyền nghiêm ngặt
+    await expect(getMembersWorkload(memNd)).rejects.toMatchObject({ status: 403 });
+
+    const workloadForLeadNd = await getMembersWorkload(leadNd);
+    const leadVisibleIds = workloadForLeadNd.members.map((m) => m.memberId);
+    expect(leadVisibleIds).toContain(memNd.memberId);
+    expect(leadVisibleIds).not.toContain(memMedia.memberId);
+    expect(leadVisibleIds).not.toContain(head.memberId);
+
+    const memNdWorkload = workloadForLeadNd.members.find((m) => m.memberId === memNd.memberId)!;
+    expect(memNdWorkload.counts.pending).toBeGreaterThanOrEqual(3);
+    expect(memNdWorkload.activeTasks.length).toBeGreaterThanOrEqual(3);
+
+    const workloadForHead = await getMembersWorkload(head);
+    expect(workloadForHead.members.some((m) => m.memberId === memMedia.memberId)).toBe(true);
+
+    // Danh bạ kèm workload ẩn workload của thành viên ngoài tổ đối với TEAM_LEAD
+    const dirForLeadNd = await listMembersDirectory(leadNd, { includeWorkload: true });
+    const mediaEntry = dirForLeadNd.find((m) => m.id === memMedia.memberId);
+    const ndEntry = dirForLeadNd.find((m) => m.id === memNd.memberId);
+    expect(mediaEntry?.workload).toBeNull();
+    expect(ndEntry?.workload?.activeTotal).toBeGreaterThanOrEqual(3);
+  });
+
+  it("Kịch bản 12: Quy trình đăng ký xin dời deadline (duyệt giữ dấu vết / từ chối → chuyển người khác) và Tài khoản nội bộ (provider = local) cho thành viên không thuộc Đoàn trực thuộc", async () => {
+    // --- Phần A: Tài khoản nội bộ trực tiếp (VD Tổ VietGENIUS) ---
+    const vgTeam = await query<{ id: string }>("SELECT id FROM teams WHERE code = 'VIETGENIUS'");
+    const teamVgId = vgTeam[0].id;
+
+    // Không phải Bậc 01.01 (HEAD) không được tạo tài khoản nội bộ
+    await expect(
+      createLocalMember(deputy, {
+        username: "khongduoc.tao",
+        displayName: "Người Test",
+        password: "Password@123",
+        role: "MEMBER",
+        primaryTeamId: teamVgId,
+      }),
+    ).rejects.toMatchObject({ status: 403 });
+
+    // Bậc 01.01 tạo tài khoản nội bộ cho anh Trung Việt (Tổ VietGENIUS)
+    const localCreated = await createLocalMember(head, {
+      username: "trungviet.vg",
+      displayName: "Nguyễn Trung Việt",
+      password: "InitPassword@2026",
+      email: "trungviet@example.com",
+      currentOrg: "Cộng tác viên chuyên môn Tổ VietGENIUS",
+      role: "MEMBER",
+      primaryTeamId: teamVgId,
+    });
+    expect(localCreated.username).toBe("trungviet.vg");
+
+    // Trùng username bị chặn 409
+    await expect(
+      createLocalMember(head, {
+        username: "TRUNGVIET.VG",
+        displayName: "Trùng tên",
+        password: "InitPassword@2026",
+        role: "MEMBER",
+        primaryTeamId: teamVgId,
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    // Mật khẩu băm scrypt xác minh chính xác
+    const credRow = await query<{ password_hash: string }>(
+      "SELECT password_hash FROM local_credentials WHERE member_id = $1",
+      [localCreated.memberId],
+    );
+    expect(verifyPassword("InitPassword@2026", credRow[0].password_hash)).toBe(true);
+    expect(verifyPassword("WrongPassword", credRow[0].password_hash)).toBe(false);
+
+    // Phiên tài khoản nội bộ vẫn hoạt động ngay cả khi cổng thông tin ngoài mất kết nối (không bị portal recheck)
+    const localToken = await createSessionForMember(localCreated.memberId);
+    setMockPortalSourceDown(true);
+    const localActor = await resolveSessionActor(localToken, { forceRecheck: true });
+    expect(localActor).not.toBeNull();
+    expect(localActor?.provider).toBe("local");
+    setMockPortalSourceDown(false);
+
+    // Thành viên nội bộ tự đổi mật khẩu
+    await changeOwnLocalPassword(localActor!, "InitPassword@2026", "NewStrongPw@2026");
+    const credAfterChange = await query<{ password_hash: string; must_change_password: boolean }>(
+      "SELECT password_hash, must_change_password FROM local_credentials WHERE member_id = $1",
+      [localCreated.memberId],
+    );
+    expect(verifyPassword("NewStrongPw@2026", credAfterChange[0].password_hash)).toBe(true);
+    expect(credAfterChange[0].must_change_password).toBe(false);
+
+    // HEAD đặt lại mật khẩu -> thu hồi ngay phiên cũ
+    await resetLocalMemberPassword(head, localCreated.memberId, "ResetPw@2026");
+    expect(await resolveSessionActor(localToken)).toBeNull();
+
+    // --- Phần B: Quy trình xin dời deadline (Duyệt lưu dấu vết + Từ chối rồi chuyển giao) ---
+    const deadline24h = new Date(Date.now() + 24 * 3600_000).toISOString();
+    const deadline72h = new Date(Date.now() + 72 * 3600_000).toISOString();
+    const deadline48h = new Date(Date.now() + 48 * 3600_000).toISOString();
+
+    const mission = await createMission(deputy, {
+      groupId: groupAId,
+      title: "Nhiệm vụ kiểm thử đăng ký xin dời deadline",
+      description: "Kiểm thử cả 2 nhánh: duyệt dời có dấu vết và từ chối để chuyển người khác",
+      ownerId: deputy.memberId,
+      deadline: deadline72h,
+      tasks: [
+        { tempKey: "e1", title: "Task xin dời được duyệt", ownerTeamId: teamNdId, deadline: deadline24h, weight: 2, assigneeIds: [memNd.memberId] },
+        { tempKey: "e2", title: "Task xin dời bị từ chối", ownerTeamId: teamNdId, deadline: deadline24h, weight: 2, assigneeIds: [memNd.memberId] },
+      ],
+    });
+
+    const mDetail = await getMissionDetail(leadNd, mission.id);
+    const ass1 = mDetail.tasks[0].assignments[0];
+    const ass2 = mDetail.tasks[1].assignments[0];
+    const originalDeadline1 = ass1.originalDeadline;
+
+    // 1. Mem gửi đơn xin dời Task 1 -> hiện trong extensionQueue của Lead Nội dung (không hiện ở Lead Media)
+    const ext1 = await requestDeadlineExtension(memNd, ass1.id, {
+      requestedDeadline: deadline48h,
+      reason: "Trùng lịch thi giữa kỳ ở trường, xin dời thêm 24 giờ",
+    });
+    expect(ext1.status).toBe("PENDING");
+
+    // Chặn gửi đơn trùng khi đã có đơn PENDING
+    await expect(
+      requestDeadlineExtension(memNd, ass1.id, {
+        requestedDeadline: deadline72h,
+        reason: "Gửi trùng lần hai",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const leadNdWork = await getMyWork(leadNd);
+    expect(leadNdWork.extensionQueue.some((e) => e.id === ext1.id)).toBe(true);
+    const leadMediaWork = await getMyWork(leadMedia);
+    expect(leadMediaWork.extensionQueue.some((e) => e.id === ext1.id)).toBe(false);
+
+    // Chặn tự duyệt và chặn trưởng tổ khác duyệt
+    await expect(resolveDeadlineExtension(memNd, ext1.id, "approve", {})).rejects.toMatchObject({ status: 403 });
+    await expect(resolveDeadlineExtension(leadMedia, ext1.id, "approve", {})).rejects.toMatchObject({ status: 403 });
+
+    // Lead Nội dung duyệt dời hạn -> giữ nguyên originalDeadline, cập nhật evaluationDeadline, bật cờ dấu vết & lưu deadline_history
+    await resolveDeadlineExtension(leadNd, ext1.id, "approve", {
+      approvedDeadline: deadline48h,
+      note: "Đồng ý gia hạn 24h",
+    });
+    const afterApprove = await getMissionDetail(leadNd, mission.id);
+    const ass1After = afterApprove.tasks[0].assignments[0];
+    expect(ass1After.originalDeadline).toBe(originalDeadline1);
+    expect(ass1After.evaluationDeadline).toBe(deadline48h);
+    expect(ass1After.lateAgainstOriginalDeadline).toBe(true);
+    expect(ass1After.extensionCount).toBe(1);
+    expect(afterApprove.deadlineHistory.some((h) => h.assignmentId === ass1.id && h.approvedException)).toBe(true);
+
+    // 2. Mem gửi đơn xin dời Task 2 -> Lead từ chối rồi chuyển giao cho thành viên khác trong tổ
+    const ext2 = await requestDeadlineExtension(memNd, ass2.id, {
+      requestedDeadline: deadline48h,
+      reason: "Em bận đột xuất không kịp làm tối nay",
+    });
+    const rej = await resolveDeadlineExtension(leadNd, ext2.id, "reject", {
+      note: "Bài cần lên sóng gấp, tổ sẽ phân người khác hỗ trợ",
+    });
+    expect(rej.status).toBe("REJECTED");
+
+    // Sau khi từ chối, Lead chuyển giao Task 2 cho chính lead hoặc 1 mem khác trong tổ
+    const memNd2 = await createLocalMember(head, {
+      username: "ctv.noidung2",
+      displayName: "Trần CTV Nội Dung",
+      password: "Password@2026",
+      role: "MEMBER",
+      primaryTeamId: teamNdId,
+    });
+    await assignmentAction(leadNd, ass2.id, "transfer", {
+      newMemberId: memNd2.memberId,
+      reason: "Từ chối xin dời hạn — phân người khác kịp tiến độ",
+    });
+
+    const afterRejectTransfer = await getMissionDetail(leadNd, mission.id);
+    expect(afterRejectTransfer.extensionRequests.find((e) => e.id === ext2.id)?.status).toBe("REJECTED");
+    expect(afterRejectTransfer.tasks[1].assignments.some((a) => a.memberId === memNd2.memberId && a.status === "PENDING")).toBe(true);
   });
 });

@@ -127,3 +127,36 @@ export function RoleBadge({ role }: { role: MemberRole }) {
     </span>
   );
 }
+
+export type WorkloadLevelUi = "FREE" | "NORMAL" | "BUSY" | "OVERLOADED";
+
+export function WorkloadBadge({
+  level,
+  activeTotal,
+  overdue,
+}: {
+  level: WorkloadLevelUi;
+  activeTotal?: number;
+  overdue?: number;
+}) {
+  const styles: Record<WorkloadLevelUi, string> = {
+    FREE: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    NORMAL: "bg-blue-50 text-blue-700 border-blue-200",
+    BUSY: "bg-amber-50 text-amber-800 border-amber-200",
+    OVERLOADED: "bg-red-50 text-red-700 border-red-200",
+  };
+  const labels: Record<WorkloadLevelUi, string> = {
+    FREE: "Đang rảnh",
+    NORMAL: "Bình thường",
+    BUSY: "Đang bận",
+    OVERLOADED: overdue && overdue > 0 ? `Có ${overdue} quá hạn` : "Quá tải",
+  };
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${styles[level]}`}>
+      <span>{labels[level]}</span>
+      {typeof activeTotal === "number" && activeTotal > 0 && (
+        <span className="opacity-80">({activeTotal} việc)</span>
+      )}
+    </span>
+  );
+}

@@ -20,6 +20,7 @@ export interface TeamMembershipInfo {
 export interface AuthActor {
   memberId: string;
   memberCode: string;
+  provider: string;
   externalAccountId: string;
   username: string;
   displayName: string;
@@ -82,6 +83,7 @@ export async function loadActorByMemberId(memberId: string): Promise<AuthActor |
   const row = await queryOne<{
     id: string;
     member_code: string;
+    provider: string;
     external_account_id: string;
     username: string;
     display_name: string;
@@ -92,7 +94,7 @@ export async function loadActorByMemberId(memberId: string): Promise<AuthActor |
     role_version: number;
     archived_at: Date | null;
   }>(
-    `SELECT id, member_code, external_account_id, username, display_name, role,
+    `SELECT id, member_code, provider, external_account_id, username, display_name, role,
             access_enabled, activity_status, identity_checked_at, role_version, archived_at
      FROM members
      WHERE id = $1`,
@@ -126,6 +128,7 @@ export async function loadActorByMemberId(memberId: string): Promise<AuthActor |
   return {
     memberId: row.id,
     memberCode: row.member_code,
+    provider: row.provider,
     externalAccountId: row.external_account_id,
     username: row.username,
     displayName: row.display_name,
@@ -168,7 +171,8 @@ export async function resolveSessionActor(
   const cfg = getConfig();
   const lastCheckedMs = new Date(actor.identityCheckedAt).getTime();
   const ageSeconds = (Date.now() - lastCheckedMs) / 1000;
-  const needsRecheck = options?.forceRecheck || ageSeconds >= cfg.identityRecheckSeconds;
+  // Tài khoản nội bộ (provider = 'local') xác thực trực tiếp qua DB nội bộ (access_enabled & activity_status đã kiểm tra ở trên), không gọi recheck sang cổng thông tin ngoài.
+  const needsRecheck = actor.provider !== "local" && (options?.forceRecheck || ageSeconds >= cfg.identityRecheckSeconds);
 
   if (needsRecheck) {
     try {

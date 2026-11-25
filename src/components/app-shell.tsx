@@ -23,6 +23,7 @@ import { RoleBadge } from "@/components/badges";
 export interface SessionActor {
   memberId: string;
   memberCode: string;
+  provider?: string;
   externalAccountId: string;
   username: string;
   displayName: string;

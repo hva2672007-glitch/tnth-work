@@ -1,23 +1,32 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { PGlite } from "@electric-sql/pglite";
 import { SEED_CHANNELS, SEED_TEAMS } from "@/lib/constants";
 
 /**
- * Tự động khởi tạo schema + dữ liệu mẫu cho chế độ APP_ENV=preview (VD Render free preview).
+ * Tự động khởi tạo schema + áp dụng toàn bộ SQL migrations + dữ liệu mẫu cho chế độ APP_ENV=preview (VD Render free preview).
  * KHÔNG BAO GIỜ chạy trong APP_ENV=production (bị chặn tại src/server/config.ts).
  */
 export async function bootstrapPreviewPglite(db: PGlite): Promise<void> {
-  const tableCheck = await db.query<{ exists: string | null }>(
-    `SELECT to_regclass('public.members') AS exists`,
-  );
-  if (!tableCheck.rows[0]?.exists) {
-    const migrationPath = path.resolve(process.cwd(), "db", "migrations", "0001_init_schema.sql");
-    const sql = readFileSync(migrationPath, "utf8");
-    await db.exec(sql);
-    await db.query(
-      `INSERT INTO schema_migrations (version) VALUES ('0001_init_schema.sql') ON CONFLICT DO NOTHING`,
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+  `);
+  const appliedRows = (await db.query<{ version: string }>(`SELECT version FROM schema_migrations`)).rows;
+  const applied = new Set(appliedRows.map((r) => r.version));
+
+  const migrationsDir = path.resolve(process.cwd(), "db", "migrations");
+  const files = readdirSync(migrationsDir)
+    .filter((f) => f.endsWith(".sql"))
+    .sort();
+
+  for (const file of files) {
+    if (applied.has(file)) continue;
+    const sql = readFileSync(path.join(migrationsDir, file), "utf8");
+    await db.exec(sql);
+    await db.query(`INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, [file]);
   }
 
   const memberCount = await db.query<{ c: string }>(`SELECT count(*)::text AS c FROM members`);

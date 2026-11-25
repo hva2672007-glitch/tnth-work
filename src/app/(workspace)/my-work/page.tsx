@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Check, ExternalLink, XCircle } from "lucide-react";
+import { CalendarClock, Check, ExternalLink, UserPlus, X, XCircle } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { StatusBadge, UrgencyBadge } from "@/components/badges";
-import { formatVnDateTime } from "@/lib/date";
+import { formatVnDateTime, isoToVnLocalInput, vnLocalInputToIso } from "@/lib/date";
 import type { UrgencyLevel } from "@/lib/constants";
 
 interface MyWorkData {
@@ -22,7 +22,10 @@ interface MyWorkData {
     teamName: string;
     urgency: UrgencyLevel;
     status: string;
+    originalDeadline?: string;
     deadline: string;
+    lateAgainstOriginalDeadline?: boolean;
+    pendingExtension?: { id: string; requestedDeadline: string } | null;
     isOverdue: boolean;
     weight: number;
   }>;
@@ -37,6 +40,39 @@ interface MyWorkData {
     submittedAt: string;
     deadline: string;
     urgency: UrgencyLevel;
+  }>;
+  delegationQueue?: Array<{
+    taskId: string;
+    taskCode: string;
+    taskTitle: string;
+    deliverable: string;
+    missionId: string;
+    missionCode: string;
+    missionTitle: string;
+    ownerTeamId: string;
+    teamName: string;
+    creatorName: string;
+    deadline: string;
+    isOverdue: boolean;
+    urgency: UrgencyLevel;
+    weight: number;
+    declinedCount: number;
+  }>;
+  extensionQueue?: Array<{
+    id: string;
+    assignmentId: string;
+    taskId: string;
+    taskCode: string;
+    taskTitle: string;
+    missionId: string;
+    missionCode: string;
+    teamName: string;
+    requesterName: string;
+    currentDeadline: string;
+    requestedDeadline: string;
+    reason: string;
+    urgency: UrgencyLevel;
+    createdAt: string;
   }>;
 }
 
@@ -54,6 +90,18 @@ export default function MyWorkPage() {
   const [tab, setTab] = useState("ALL");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Modal xin dời deadline nhanh ngay trên trang Việc của tôi
+  const [extModal, setExtModal] = useState<{
+    assignmentId: string;
+    taskCode: string;
+    taskTitle: string;
+    currentDeadline: string;
+  } | null>(null);
+  const [extNewLocal, setExtNewLocal] = useState("");
+  const [extReason, setExtReason] = useState("");
+  const [extSubmitting, setExtSubmitting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -78,6 +126,8 @@ export default function MyWorkPage() {
   }, [load]);
 
   const filtered = (data?.assignments ?? []).filter((a) => (tab === "ALL" ? true : a.status === tab));
+  const delegationQueue = data?.delegationQueue ?? [];
+  const extensionQueue = data?.extensionQueue ?? [];
 
   const accept = async (assignmentId: string) => {
     try {
@@ -102,14 +152,143 @@ export default function MyWorkPage() {
     }
   };
 
+  const openExtModal = (a: MyWorkData["assignments"][number]) => {
+    const baseMs = Math.max(Date.now(), new Date(a.deadline).getTime());
+    setExtModal({
+      assignmentId: a.assignmentId,
+      taskCode: a.taskCode,
+      taskTitle: a.taskTitle,
+      currentDeadline: a.deadline,
+    });
+    setExtNewLocal(isoToVnLocalInput(new Date(baseMs + 24 * 3600_000)));
+    setExtReason("");
+  };
+
+  const submitExt = async () => {
+    if (!extModal || extReason.trim().length < 5) return;
+    setExtSubmitting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await apiFetch(`/api/v1/assignments/${extModal.assignmentId}/extension-requests`, {
+        method: "POST",
+        body: JSON.stringify({
+          requestedDeadline: vnLocalInputToIso(extNewLocal),
+          reason: extReason.trim(),
+        }),
+      });
+      setExtModal(null);
+      setNotice("Đã gửi đăng ký xin dời deadline lên cấp trên.");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không thể gửi đăng ký xin dời deadline.");
+    } finally {
+      setExtSubmitting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Việc của tôi</h1>
-        <p className="text-sm text-slate-500">Nhận việc, theo dõi hạn nộp sản phẩm và xử lý hàng chờ nghiệm thu</p>
+        <p className="text-sm text-slate-500">
+          Nhận việc, xin dời hạn khi cần, điều phối việc tổ chờ phân công và xử lý hàng chờ duyệt
+        </p>
       </div>
 
       {error && <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</div>}
+      {notice && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">{notice}</div>}
+
+      {/* Hàng chờ duyệt yêu cầu xin dời deadline dành cho Tổ trưởng / Ban */}
+      {extensionQueue.length > 0 && (
+        <section className="rounded-xl border border-orange-200 bg-orange-50/40 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="flex items-center gap-1.5 text-sm font-bold text-orange-950">
+              <CalendarClock className="h-4 w-4 text-orange-700" />
+              Yêu cầu xin dời deadline chờ xử lý ({extensionQueue.length})
+            </h2>
+            <span className="text-xs text-orange-800">
+              Duyệt gia hạn (lưu dấu vết) hoặc từ chối để phân công người khác
+            </span>
+          </div>
+          <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
+            {extensionQueue.map((e) => (
+              <Link
+                key={e.id}
+                href={`/missions/${e.missionId}`}
+                className="rounded-lg border border-orange-200 bg-white p-3 transition hover:border-blue-400"
+              >
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono font-bold text-orange-700">{e.taskCode}</span>
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-700">
+                      {e.teamName}
+                    </span>
+                  </div>
+                  <UrgencyBadge urgency={e.urgency} />
+                </div>
+                <div className="mt-1 text-sm font-semibold text-slate-900">
+                  {e.requesterName} xin dời: {e.taskTitle}
+                </div>
+                <div className="mt-1 text-xs text-slate-600">
+                  {formatVnDateTime(e.currentDeadline)} → <strong className="text-blue-700">{formatVnDateTime(e.requestedDeadline)}</strong>
+                </div>
+                <div className="mt-1 line-clamp-2 text-xs text-slate-500">Lý do: {e.reason}</div>
+                <div className="mt-1.5 text-right text-xs font-semibold text-orange-700">Xử lý ngay →</div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Hàng chờ phân công cho Lãnh đạo tổ / Ban */}
+      {delegationQueue.length > 0 && (
+        <section className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="flex items-center gap-1.5 text-sm font-bold text-indigo-950">
+              <UserPlus className="h-4 w-4 text-indigo-700" />
+              Việc tổ chờ phân công thành viên ({delegationQueue.length} task)
+            </h2>
+            <span className="text-xs text-indigo-700">
+              Bấm vào từng task để chọn thành viên thực hiện hoặc tách đầu việc
+            </span>
+          </div>
+          <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
+            {delegationQueue.map((d) => (
+              <Link
+                key={d.taskId}
+                href={`/missions/${d.missionId}`}
+                className="rounded-lg border border-indigo-200 bg-white p-3 transition hover:border-blue-400"
+              >
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono font-bold text-indigo-700">{d.taskCode}</span>
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-700">
+                      {d.teamName}
+                    </span>
+                  </div>
+                  <UrgencyBadge urgency={d.urgency} />
+                </div>
+                <div className="mt-1 text-sm font-semibold text-slate-900">{d.taskTitle}</div>
+                <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+                  <span>
+                    Giao bởi {d.creatorName} · Hạn:{" "}
+                    <strong className={d.isOverdue ? "text-red-700" : "text-slate-700"}>
+                      {formatVnDateTime(d.deadline)}
+                    </strong>
+                  </span>
+                  <span className="font-semibold text-indigo-700">Phân công ngay →</span>
+                </div>
+                {d.declinedCount > 0 && (
+                  <div className="mt-1 text-[11px] font-medium text-red-700">
+                    Lưu ý: Đã có {d.declinedCount} lượt từ chối nhận việc — cần phân công lại.
+                  </div>
+                )}
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Hàng chờ nghiệm thu dành cho cấp quản trị */}
       {data && data.reviewQueue.length > 0 && (
@@ -193,13 +372,21 @@ export default function MyWorkPage() {
                       {a.deliverable && <div className="text-xs text-slate-500">Đầu ra: {a.deliverable}</div>}
                     </td>
                     <td className={`whitespace-nowrap text-xs font-medium ${a.isOverdue ? "text-red-700" : "text-slate-700"}`}>
-                      {formatVnDateTime(a.deadline)}
+                      <div>{formatVnDateTime(a.deadline)}</div>
                       {a.isOverdue && <div className="font-bold text-red-600">QUÁ HẠN</div>}
+                      {a.lateAgainstOriginalDeadline && a.originalDeadline && (
+                        <div className="text-[11px] text-amber-800">Đã dời (gốc: {formatVnDateTime(a.originalDeadline)})</div>
+                      )}
+                      {a.pendingExtension && (
+                        <div className="text-[11px] font-semibold text-indigo-700">
+                          Chờ duyệt dời → {formatVnDateTime(a.pendingExtension.requestedDeadline)}
+                        </div>
+                      )}
                     </td>
                     <td><UrgencyBadge urgency={a.urgency} /></td>
                     <td><StatusBadge status={a.status} kind="assignment" /></td>
                     <td className="whitespace-nowrap">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         {a.status === "PENDING" && (
                           <>
                             <button
@@ -218,6 +405,15 @@ export default function MyWorkPage() {
                             </button>
                           </>
                         )}
+                        {["PENDING", "ACCEPTED", "REVISION_REQUIRED"].includes(a.status) && !a.pendingExtension && (
+                          <button
+                            type="button"
+                            onClick={() => openExtModal(a)}
+                            className="inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+                          >
+                            <CalendarClock className="h-3 w-3" /> Xin dời
+                          </button>
+                        )}
                         <Link
                           href={`/missions/${a.missionId}`}
                           className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50"
@@ -233,6 +429,68 @@ export default function MyWorkPage() {
           </table>
         </div>
       </div>
+
+      {/* Modal đăng ký xin dời deadline */}
+      {extModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-xl">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Đăng ký xin dời deadline ({extModal.taskCode})</h3>
+                <p className="mt-0.5 text-xs text-slate-500">{extModal.taskTitle}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExtModal(null)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700">
+              Hạn hiện tại: <strong>{formatVnDateTime(extModal.currentDeadline)}</strong>
+            </div>
+            <div className="mt-3 space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-700">Hạn mới đề xuất *</label>
+                <input
+                  type="datetime-local"
+                  value={extNewLocal}
+                  onChange={(e) => setExtNewLocal(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-700">Lý do cụ thể xin dời *</label>
+                <textarea
+                  rows={3}
+                  value={extReason}
+                  onChange={(e) => setExtReason(e.target.value)}
+                  placeholder="Ghi rõ lý do cụ thể để cấp trên xem xét duyệt hoặc điều phối người khác..."
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setExtModal(null)}
+                className="rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                disabled={extSubmitting || extReason.trim().length < 5 || !extNewLocal}
+                onClick={() => void submitExt()}
+                className="rounded-lg bg-amber-600 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+              >
+                {extSubmitting ? "Đang gửi..." : "Gửi đơn xin dời"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

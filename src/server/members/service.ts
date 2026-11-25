@@ -1,16 +1,33 @@
 import { query, queryOne, withTransaction } from "@/server/db";
 import type { AuthActor } from "@/server/auth/session";
 import { revokeAllSessionsForMember } from "@/server/auth/session";
-import { can, requirePermission } from "@/server/authorization/policy";
+import { hashPassword, verifyPassword } from "@/server/auth/password";
+import { can, isBoardLeadership, isManagerRole, requirePermission } from "@/server/authorization/policy";
 import { getPortalProvider } from "@/server/auth/portal-adapter";
 import { writeAudit } from "@/server/audit/service";
 import { createNotification } from "@/server/notifications/service";
 import { AppError } from "@/server/errors";
-import type { ActivityStatus, MemberRole, TeamTitle } from "@/lib/constants";
+import { currentVnYearMonth, vnMonthRange } from "@/lib/date";
+import type { ActivityStatus, MemberRole, TeamTitle, UrgencyLevel } from "@/lib/constants";
+
+export type WorkloadLevel = "FREE" | "NORMAL" | "BUSY" | "OVERLOADED";
+
+export interface MemberWorkloadBadge {
+  pending: number;
+  inProgress: number;
+  submitted: number;
+  revisionRequired: number;
+  activeTotal: number;
+  overdue: number;
+  activeWeight: number;
+  nearestDeadline: string | null;
+  workloadLevel: WorkloadLevel;
+}
 
 export interface MemberDirectoryItem {
   id: string;
   memberCode: string;
+  provider: string;
   externalAccountId: string;
   username: string;
   displayName: string;
@@ -23,11 +40,64 @@ export interface MemberDirectoryItem {
   canViewDetail: boolean;
   canEdit: boolean;
   canRevoke: boolean;
+  workload?: MemberWorkloadBadge | null;
+}
+
+export interface MemberWorkloadDetailItem {
+  memberId: string;
+  memberCode: string;
+  username: string;
+  displayName: string;
+  role: MemberRole;
+  activityStatus: ActivityStatus;
+  primaryTeam: { id: string; code: string; name: string; title: TeamTitle } | null;
+  teams: { id: string; code: string; name: string; isPrimary: boolean; title: TeamTitle }[];
+  counts: {
+    pending: number;
+    inProgress: number;
+    submitted: number;
+    revisionRequired: number;
+    activeTotal: number;
+    overdue: number;
+    completedThisMonth: number;
+  };
+  activeWeight: number;
+  nearestDeadline: string | null;
+  workloadLevel: WorkloadLevel;
+  activeTasks: Array<{
+    assignmentId: string;
+    taskId: string;
+    taskCode: string;
+    taskTitle: string;
+    missionId: string;
+    missionCode: string;
+    missionTitle: string;
+    teamName: string;
+    status: string;
+    urgency: UrgencyLevel;
+    weight: number;
+    deadline: string;
+    isOverdue: boolean;
+  }>;
+}
+
+function computeWorkloadLevel(activeTotal: number, overdue: number): WorkloadLevel {
+  if (overdue > 0 || activeTotal >= 5) return "OVERLOADED";
+  if (activeTotal >= 3) return "BUSY";
+  if (activeTotal >= 1) return "NORMAL";
+  return "FREE";
 }
 
 export async function listMembersDirectory(
   actor: AuthActor,
-  filters?: { search?: string; teamId?: string; role?: string; activityStatus?: string; includeRevoked?: boolean },
+  filters?: {
+    search?: string;
+    teamId?: string;
+    role?: string;
+    activityStatus?: string;
+    includeRevoked?: boolean;
+    includeWorkload?: boolean;
+  },
 ): Promise<MemberDirectoryItem[]> {
   requirePermission(actor, "member.directory.view");
 
@@ -56,6 +126,7 @@ export async function listMembersDirectory(
   const members = await query<{
     id: string;
     member_code: string;
+    provider: string;
     external_account_id: string;
     username: string;
     display_name: string;
@@ -64,7 +135,7 @@ export async function listMembersDirectory(
     activity_status: ActivityStatus;
     avatar_file_id: string | null;
   }>(
-    `SELECT m.id, m.member_code, m.external_account_id, m.username, m.display_name, m.role,
+    `SELECT m.id, m.member_code, m.provider, m.external_account_id, m.username, m.display_name, m.role,
             m.access_enabled, m.activity_status, mp.avatar_file_id
      FROM members m
      LEFT JOIN member_profiles mp ON mp.member_id = m.id
@@ -103,6 +174,69 @@ export async function listMembersDirectory(
     byMember.set(row.member_id, list);
   }
 
+  // Nếu manager yêu cầu kèm tải công việc hiện tại (phục vụ chọn người giao việc)
+  const workloadMap = new Map<string, MemberWorkloadBadge>();
+  if (filters?.includeWorkload && isManagerRole(actor.role) && members.length > 0) {
+    const memberIds = members.map((m) => m.id);
+    const activeRows = await query<{
+      member_id: string;
+      status: string;
+      weight: string | number;
+      evaluation_deadline: Date;
+    }>(
+      `SELECT ta.member_id, ta.status, ta.weight, ta.evaluation_deadline
+       FROM task_assignments ta
+       JOIN tasks t ON t.id = ta.task_id
+       JOIN missions m ON m.id = t.mission_id
+       WHERE ta.member_id = ANY($1::uuid[])
+         AND ta.status IN ('PENDING', 'ACCEPTED', 'SUBMITTED', 'REVISION_REQUIRED')
+         AND m.status NOT IN ('DRAFT', 'CANCELLED', 'COMPLETED')
+         AND t.status NOT IN ('DRAFT', 'CANCELLED', 'COMPLETED')`,
+      [memberIds],
+    );
+    const nowMs = Date.now();
+    const bucket = new Map<string, typeof activeRows>();
+    for (const r of activeRows) {
+      const list = bucket.get(r.member_id) ?? [];
+      list.push(r);
+      bucket.set(r.member_id, list);
+    }
+    for (const m of members) {
+      const list = bucket.get(m.id) ?? [];
+      let pending = 0;
+      let inProgress = 0;
+      let submitted = 0;
+      let revisionRequired = 0;
+      let overdue = 0;
+      let activeWeight = 0;
+      let nearestMs: number | null = null;
+      for (const item of list) {
+        if (item.status === "PENDING") pending++;
+        else if (item.status === "ACCEPTED") inProgress++;
+        else if (item.status === "SUBMITTED") submitted++;
+        else if (item.status === "REVISION_REQUIRED") revisionRequired++;
+        activeWeight += Number(item.weight);
+        const dueMs = new Date(item.evaluation_deadline).getTime();
+        if (dueMs < nowMs) overdue++;
+        if (item.status !== "SUBMITTED" && (nearestMs === null || dueMs < nearestMs)) {
+          nearestMs = dueMs;
+        }
+      }
+      const activeTotal = list.length;
+      workloadMap.set(m.id, {
+        pending,
+        inProgress,
+        submitted,
+        revisionRequired,
+        activeTotal,
+        overdue,
+        activeWeight: Number(activeWeight.toFixed(2)),
+        nearestDeadline: nearestMs !== null ? new Date(nearestMs).toISOString() : null,
+        workloadLevel: computeWorkloadLevel(activeTotal, overdue),
+      });
+    }
+  }
+
   return members.map((m) => {
     const mTeams = (byMember.get(m.id) ?? []).map((t) => ({
       id: t.team_id,
@@ -115,9 +249,17 @@ export async function listMembersDirectory(
     const primary = mTeams.find((t) => t.isPrimary) ?? null;
 
     const resource = { targetMemberId: m.id, targetRole: m.role, targetTeamIds: teamIds };
+    const canSeeWorkload =
+      Boolean(filters?.includeWorkload) &&
+      isManagerRole(actor.role) &&
+      (isBoardLeadership(actor.role) ||
+        m.id === actor.memberId ||
+        (!isBoardLeadership(m.role) && teamIds.some((id) => actor.leadTeamIds.includes(id))));
+
     return {
       id: m.id,
       memberCode: m.member_code,
+      provider: m.provider,
       externalAccountId: m.external_account_id,
       username: m.username,
       displayName: m.display_name,
@@ -130,8 +272,199 @@ export async function listMembersDirectory(
       canViewDetail: can(actor, "member.profile.view", resource),
       canEdit: can(actor, "member.profile.edit", resource),
       canRevoke: can(actor, "member.access.revoke", resource),
+      ...(filters?.includeWorkload ? { workload: canSeeWorkload ? (workloadMap.get(m.id) ?? null) : null } : {}),
     };
   });
+}
+
+/**
+ * Báo cáo tình hình khối lượng công việc hiện tại theo từng nhân sự (dành cho Bậc 01/02 toàn Ban & Bậc 03 trong tổ phụ trách).
+ */
+export async function getMembersWorkload(
+  actor: AuthActor,
+  filters?: { teamId?: string; search?: string; onlyOverdue?: boolean; onlyFree?: boolean },
+): Promise<{
+  summary: {
+    totalMembers: number;
+    freeCount: number;
+    normalCount: number;
+    busyCount: number;
+    overloadedCount: number;
+    totalActiveTasks: number;
+    totalOverdueTasks: number;
+  };
+  members: MemberWorkloadDetailItem[];
+}> {
+  if (!isManagerRole(actor.role)) {
+    throw new AppError(403, "FORBIDDEN", "Chỉ lãnh đạo Ban và Trưởng/Phó tổ mới được xem tình hình công việc nhân sự.");
+  }
+
+  const directory = await listMembersDirectory(actor, {
+    search: filters?.search,
+    teamId: filters?.teamId,
+  });
+
+  // Lọc chặt theo phạm vi quyền: 01/02 toàn Ban; 03 chỉ thành viên trong tổ mình lãnh đạo (+ bản thân)
+  const scopedMembers = directory.filter((m) => {
+    if (isBoardLeadership(actor.role)) return true;
+    if (m.id === actor.memberId) return true;
+    if (isBoardLeadership(m.role)) return false;
+    return m.teams.some((t) => actor.leadTeamIds.includes(t.id));
+  });
+
+  const memberIds = scopedMembers.map((m) => m.id);
+  const { year, month } = currentVnYearMonth();
+  const monthRange = vnMonthRange(year, month);
+
+  const [activeRows, completedRows] =
+    memberIds.length > 0
+      ? await Promise.all([
+          query<{
+            assignment_id: string;
+            member_id: string;
+            task_id: string;
+            task_code: string;
+            task_title: string;
+            mission_id: string;
+            mission_code: string;
+            mission_title: string;
+            team_name: string;
+            status: string;
+            urgency: UrgencyLevel;
+            weight: string | number;
+            evaluation_deadline: Date;
+          }>(
+            `SELECT ta.id AS assignment_id, ta.member_id, t.id AS task_id, t.code AS task_code, t.title AS task_title,
+                    m.id AS mission_id, m.code AS mission_code, m.title AS mission_title, tm.name AS team_name,
+                    ta.status, t.urgency, ta.weight, ta.evaluation_deadline
+             FROM task_assignments ta
+             JOIN tasks t ON t.id = ta.task_id
+             JOIN missions m ON m.id = t.mission_id
+             JOIN teams tm ON tm.id = t.owner_team_id
+             WHERE ta.member_id = ANY($1::uuid[])
+               AND ta.status IN ('PENDING', 'ACCEPTED', 'SUBMITTED', 'REVISION_REQUIRED')
+               AND m.status NOT IN ('DRAFT', 'CANCELLED', 'COMPLETED')
+               AND t.status NOT IN ('DRAFT', 'CANCELLED', 'COMPLETED')
+             ORDER BY ta.evaluation_deadline ASC`,
+            [memberIds],
+          ),
+          query<{ member_id: string; c: string }>(
+            `SELECT ta.member_id, count(*)::text AS c
+             FROM task_assignments ta
+             WHERE ta.member_id = ANY($1::uuid[])
+               AND ta.status = 'COMPLETED'
+               AND COALESCE(ta.effective_submitted_at, ta.reviewed_at, ta.updated_at) >= $2
+               AND COALESCE(ta.effective_submitted_at, ta.reviewed_at, ta.updated_at) < $3
+             GROUP BY ta.member_id`,
+            [memberIds, monthRange.start.toISOString(), monthRange.end.toISOString()],
+          ),
+        ])
+      : [[], []];
+
+  const completedMap = new Map<string, number>();
+  for (const r of completedRows) {
+    completedMap.set(r.member_id, Number(r.c));
+  }
+
+  const activeByMember = new Map<string, typeof activeRows>();
+  for (const r of activeRows) {
+    const list = activeByMember.get(r.member_id) ?? [];
+    list.push(r);
+    activeByMember.set(r.member_id, list);
+  }
+
+  const nowMs = Date.now();
+  let items: MemberWorkloadDetailItem[] = scopedMembers.map((m) => {
+    const tasks = activeByMember.get(m.id) ?? [];
+    let pending = 0;
+    let inProgress = 0;
+    let submitted = 0;
+    let revisionRequired = 0;
+    let overdue = 0;
+    let activeWeight = 0;
+    let nearestMs: number | null = null;
+
+    const mappedTasks = tasks.map((t) => {
+      if (t.status === "PENDING") pending++;
+      else if (t.status === "ACCEPTED") inProgress++;
+      else if (t.status === "SUBMITTED") submitted++;
+      else if (t.status === "REVISION_REQUIRED") revisionRequired++;
+      const w = Number(t.weight);
+      activeWeight += w;
+      const dueMs = new Date(t.evaluation_deadline).getTime();
+      const isOverdue = dueMs < nowMs;
+      if (isOverdue) overdue++;
+      if (t.status !== "SUBMITTED" && (nearestMs === null || dueMs < nearestMs)) {
+        nearestMs = dueMs;
+      }
+      return {
+        assignmentId: t.assignment_id,
+        taskId: t.task_id,
+        taskCode: t.task_code,
+        taskTitle: t.task_title,
+        missionId: t.mission_id,
+        missionCode: t.mission_code,
+        missionTitle: t.mission_title,
+        teamName: t.team_name,
+        status: t.status,
+        urgency: t.urgency,
+        weight: w,
+        deadline: new Date(t.evaluation_deadline).toISOString(),
+        isOverdue,
+      };
+    });
+
+    const activeTotal = mappedTasks.length;
+    return {
+      memberId: m.id,
+      memberCode: m.memberCode,
+      username: m.username,
+      displayName: m.displayName,
+      role: m.role,
+      activityStatus: m.activityStatus,
+      primaryTeam: m.primaryTeam,
+      teams: m.teams,
+      counts: {
+        pending,
+        inProgress,
+        submitted,
+        revisionRequired,
+        activeTotal,
+        overdue,
+        completedThisMonth: completedMap.get(m.id) ?? 0,
+      },
+      activeWeight: Number(activeWeight.toFixed(2)),
+      nearestDeadline: nearestMs !== null ? new Date(nearestMs).toISOString() : null,
+      workloadLevel: computeWorkloadLevel(activeTotal, overdue),
+      activeTasks: mappedTasks,
+    };
+  });
+
+  if (filters?.onlyOverdue) {
+    items = items.filter((i) => i.counts.overdue > 0);
+  }
+  if (filters?.onlyFree) {
+    items = items.filter((i) => i.counts.activeTotal === 0 && i.activityStatus === "ACTIVE");
+  }
+
+  // Sắp xếp ưu tiên người quá hạn / nhiều việc lên trước để dễ phát hiện nghẽn
+  items.sort((a, b) => {
+    if (b.counts.overdue !== a.counts.overdue) return b.counts.overdue - a.counts.overdue;
+    if (b.counts.activeTotal !== a.counts.activeTotal) return b.counts.activeTotal - a.counts.activeTotal;
+    return a.displayName.localeCompare(b.displayName, "vi");
+  });
+
+  const summary = {
+    totalMembers: items.length,
+    freeCount: items.filter((i) => i.workloadLevel === "FREE").length,
+    normalCount: items.filter((i) => i.workloadLevel === "NORMAL").length,
+    busyCount: items.filter((i) => i.workloadLevel === "BUSY").length,
+    overloadedCount: items.filter((i) => i.workloadLevel === "OVERLOADED").length,
+    totalActiveTasks: items.reduce((s, i) => s + i.counts.activeTotal, 0),
+    totalOverdueTasks: items.reduce((s, i) => s + i.counts.overdue, 0),
+  };
+
+  return { summary, members: items };
 }
 
 export async function getMemberDetail(actor: AuthActor, targetMemberId: string) {
@@ -429,6 +762,248 @@ export async function grantMemberAccess(
 
     return { memberId, username: identity.username, role: input.role };
   });
+}
+
+/**
+ * Tạo tài khoản nội bộ trực tiếp (provider = 'local') cho thành viên / cộng tác viên
+ * không còn thuộc Đoàn trực thuộc để tự đăng ký trên thanhnientruonghoc.io.vn.
+ * Chỉ Trưởng Ban Biên tập (Bậc 01.01) được thực hiện.
+ */
+export async function createLocalMember(
+  actor: AuthActor,
+  input: {
+    username: string;
+    displayName: string;
+    password: string;
+    email?: string;
+    phone?: string;
+    currentOrg?: string;
+    role: MemberRole;
+    primaryTeamId: string;
+    primaryTeamTitle?: TeamTitle;
+    secondaryTeamIds?: string[];
+  },
+  requestId?: string,
+) {
+  requirePermission(
+    actor,
+    "member.access.grant",
+    { grantRole: input.role },
+    "Chỉ Trưởng Ban Biên tập (01.01) được tạo tài khoản nội bộ từ Bậc 01.02 trở xuống.",
+  );
+
+  const normalizedUsername = input.username.trim().toLowerCase();
+  if (!/^[a-z0-9._-]{4,40}$/.test(normalizedUsername)) {
+    throw new AppError(
+      400,
+      "INVALID_USERNAME",
+      "Tên đăng nhập gồm 4–40 ký tự chữ thường, số, dấu chấm (.), gạch dưới (_) hoặc gạch ngang (-).",
+    );
+  }
+  const cleanName = input.displayName.trim();
+  if (cleanName.length < 2) {
+    throw new AppError(400, "INVALID_NAME", "Vui lòng nhập họ tên thành viên (tối thiểu 2 ký tự).");
+  }
+  if (input.password.length < 8) {
+    throw new AppError(400, "WEAK_PASSWORD", "Mật khẩu tạm phải có tối thiểu 8 ký tự.");
+  }
+
+  return withTransaction(async (tx) => {
+    const teamCheck = await tx.query<{ id: string }>(
+      "SELECT id FROM teams WHERE id = $1 AND active = true",
+      [input.primaryTeamId],
+    );
+    if (!teamCheck.rows[0]) {
+      throw new AppError(400, "INVALID_TEAM", "Tổ chuyên môn chính không tồn tại hoặc đã ngừng hoạt động.");
+    }
+
+    const dup = await tx.query<{ id: string }>(
+      `SELECT id FROM members WHERE lower(username) = $1 AND archived_at IS NULL`,
+      [normalizedUsername],
+    );
+    if (dup.rows[0]) {
+      throw new AppError(409, "USERNAME_EXISTS", `Tên đăng nhập "${normalizedUsername}" đã tồn tại trong hệ thống.`);
+    }
+
+    // Sinh mã thành viên BBT-XXX an toàn dựa trên mã lớn nhất hiện có
+    const existingCodes = await tx.query<{ member_code: string }>(`SELECT member_code FROM members`);
+    let maxSeq = existingCodes.rows.length;
+    for (const r of existingCodes.rows) {
+      const m = r.member_code.match(/^BBT-(\d+)$/);
+      if (m) {
+        const n = Number(m[1]);
+        if (n > maxSeq) maxSeq = n;
+      }
+    }
+    const memberCode = `BBT-${String(maxSeq + 1).padStart(3, "0")}`;
+    const externalId = `local:${normalizedUsername}`;
+    const teamTitle: TeamTitle =
+      input.role === "TEAM_LEAD" ? input.primaryTeamTitle ?? "LEADER" : "MEMBER";
+
+    const inserted = await tx.query<{ id: string }>(
+      `INSERT INTO members (
+         member_code, provider, external_account_id, username, display_name, role,
+         access_enabled, activity_status, identity_checked_at
+       ) VALUES ($1, 'local', $2, $3, $4, $5, true, 'ACTIVE', now())
+       RETURNING id`,
+      [memberCode, externalId, normalizedUsername, cleanName, input.role],
+    );
+    const memberId = inserted.rows[0].id;
+
+    await tx.query(
+      `INSERT INTO local_credentials (member_id, password_hash, must_change_password, created_by)
+       VALUES ($1, $2, true, $3)`,
+      [memberId, hashPassword(input.password), actor.memberId],
+    );
+
+    await tx.query(
+      `INSERT INTO member_profiles (member_id, full_name, email, phone, current_org, joined_on)
+       VALUES ($1, $2, $3, $4, $5, CURRENT_DATE)`,
+      [
+        memberId,
+        cleanName,
+        (input.email ?? "").trim(),
+        (input.phone ?? "").trim(),
+        (input.currentOrg ?? "Cộng tác viên / Thành viên Ban Biên tập").trim(),
+      ],
+    );
+
+    await tx.query(
+      `INSERT INTO member_role_history (member_id, old_role, new_role, reason, changed_by)
+       VALUES ($1, NULL, $2, 'Tạo tài khoản nội bộ trực tiếp (không qua Đoàn trực thuộc)', $3)`,
+      [memberId, input.role, actor.memberId],
+    );
+
+    await tx.query(
+      `INSERT INTO team_memberships (member_id, team_id, is_primary, team_title, created_by)
+       VALUES ($1, $2, true, $3, $4)`,
+      [memberId, input.primaryTeamId, teamTitle, actor.memberId],
+    );
+
+    const secondaryIds = [...new Set((input.secondaryTeamIds ?? []).filter((id) => id !== input.primaryTeamId))];
+    for (const secId of secondaryIds) {
+      await tx.query(
+        `INSERT INTO team_memberships (member_id, team_id, is_primary, team_title, created_by)
+         VALUES ($1, $2, false, 'MEMBER', $3)`,
+        [memberId, secId, actor.memberId],
+      );
+    }
+
+    await createNotification(
+      {
+        recipientId: memberId,
+        eventType: "ACCESS_GRANTED",
+        targetType: "MEMBER",
+        targetId: memberId,
+        title: "Chào mừng bạn tham gia Web Phân công Ban Biên tập",
+        message: "Tài khoản nội bộ của bạn đã được kích hoạt. Bạn nên đổi mật khẩu tạm trong mục Cài đặt và hoàn thiện hồ sơ cá nhân.",
+        link: "/settings",
+      },
+      tx,
+    );
+
+    await writeAudit(
+      {
+        actorId: actor.memberId,
+        action: "LOCAL_MEMBER_CREATED",
+        targetType: "MEMBER",
+        targetId: memberId,
+        safeDiff: { memberCode, username: normalizedUsername, role: input.role, primaryTeamId: input.primaryTeamId },
+        requestId,
+      },
+      tx,
+    );
+
+    return { memberId, memberCode, username: normalizedUsername, displayName: cleanName, role: input.role };
+  });
+}
+
+/** Bậc 01.01 đặt lại mật khẩu cho tài khoản nội bộ (provider = 'local') và thu hồi phiên cũ */
+export async function resetLocalMemberPassword(
+  actor: AuthActor,
+  targetMemberId: string,
+  newPassword: string,
+  requestId?: string,
+) {
+  if (actor.role !== "HEAD") {
+    throw new AppError(403, "FORBIDDEN", "Chỉ Trưởng Ban Biên tập (01.01) được đặt lại mật khẩu tài khoản nội bộ.");
+  }
+  if (newPassword.length < 8) {
+    throw new AppError(400, "WEAK_PASSWORD", "Mật khẩu mới cần tối thiểu 8 ký tự.");
+  }
+
+  const target = await queryOne<{ id: string; provider: string; username: string }>(
+    `SELECT id, provider, username FROM members WHERE id = $1 AND archived_at IS NULL`,
+    [targetMemberId],
+  );
+  if (!target) throw new AppError(404, "MEMBER_NOT_FOUND", "Không tìm thấy thành viên.");
+  if (target.provider !== "local") {
+    throw new AppError(
+      400,
+      "NOT_LOCAL_ACCOUNT",
+      "Thành viên này dùng tài khoản đồng bộ từ thanhnientruonghoc.io.vn — vui lòng đổi mật khẩu trên cổng thông tin.",
+    );
+  }
+
+  await query(
+    `INSERT INTO local_credentials (member_id, password_hash, must_change_password, password_updated_at, created_by)
+     VALUES ($1, $2, true, now(), $3)
+     ON CONFLICT (member_id) DO UPDATE SET
+       password_hash = EXCLUDED.password_hash,
+       must_change_password = true,
+       password_updated_at = now()`,
+    [targetMemberId, hashPassword(newPassword), actor.memberId],
+  );
+  await revokeAllSessionsForMember(targetMemberId);
+  await writeAudit({
+    actorId: actor.memberId,
+    action: "LOCAL_MEMBER_PASSWORD_RESET",
+    targetType: "MEMBER",
+    targetId: targetMemberId,
+    safeDiff: { username: target.username },
+    requestId,
+  });
+
+  return { ok: true, memberId: targetMemberId };
+}
+
+/** Thành viên tài khoản nội bộ tự đổi mật khẩu của chính mình */
+export async function changeOwnLocalPassword(
+  actor: AuthActor,
+  currentPassword: string,
+  newPassword: string,
+  requestId?: string,
+) {
+  if (actor.provider !== "local") {
+    throw new AppError(
+      400,
+      "NOT_LOCAL_ACCOUNT",
+      "Tài khoản của bạn đăng nhập qua thanhnientruonghoc.io.vn — vui lòng đổi mật khẩu trực tiếp tại cổng thông tin.",
+    );
+  }
+  if (newPassword.length < 8) {
+    throw new AppError(400, "WEAK_PASSWORD", "Mật khẩu mới cần tối thiểu 8 ký tự.");
+  }
+  const cred = await queryOne<{ password_hash: string }>(
+    `SELECT password_hash FROM local_credentials WHERE member_id = $1`,
+    [actor.memberId],
+  );
+  if (!cred || !verifyPassword(currentPassword, cred.password_hash)) {
+    throw new AppError(400, "INVALID_CURRENT_PASSWORD", "Mật khẩu hiện tại không chính xác.");
+  }
+
+  await query(
+    `UPDATE local_credentials SET password_hash = $1, must_change_password = false, password_updated_at = now() WHERE member_id = $2`,
+    [hashPassword(newPassword), actor.memberId],
+  );
+  await writeAudit({
+    actorId: actor.memberId,
+    action: "LOCAL_OWN_PASSWORD_CHANGED",
+    targetType: "MEMBER",
+    targetId: actor.memberId,
+    requestId,
+  });
+  return { ok: true };
 }
 
 export async function updateMemberProfile(

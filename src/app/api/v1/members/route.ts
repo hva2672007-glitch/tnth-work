@@ -15,6 +15,7 @@ export async function GET(request: NextRequest) {
       role: url.searchParams.get("role") ?? undefined,
       activityStatus: url.searchParams.get("activityStatus") ?? undefined,
       includeRevoked: url.searchParams.get("includeRevoked") === "true",
+      includeWorkload: url.searchParams.get("includeWorkload") === "true",
     });
     return okJson(members);
   } catch (err) {

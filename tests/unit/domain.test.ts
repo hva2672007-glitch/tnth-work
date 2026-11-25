@@ -13,6 +13,7 @@ function makeActor(overrides: Partial<AuthActor>): AuthActor {
   return {
     memberId: "m-1",
     memberCode: "BBT-001",
+    provider: "tnth",
     externalAccountId: "1001",
     username: "user",
     displayName: "User",

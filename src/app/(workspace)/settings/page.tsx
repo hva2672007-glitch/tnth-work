@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Play, Plus, Shield } from "lucide-react";
+import { KeyRound, Play, Plus, Shield } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { useAuth } from "@/components/app-shell";
 import { formatVnDateTime } from "@/lib/date";
 
-type TabKey = "groups" | "channels" | "schedules" | "portal" | "audit";
+type TabKey = "groups" | "channels" | "schedules" | "portal" | "audit" | "password";
 
 export default function SettingsPage() {
   const { actor, capabilities } = useAuth();
@@ -45,6 +45,9 @@ export default function SettingsPage() {
   const [auditLogs, setAuditLogs] = useState<
     Array<{ id: string; actorName: string; action: string; targetType: string; targetId: string | null; createdAt: string }>
   >([]);
+  const [curPw, setCurPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -121,6 +124,7 @@ export default function SettingsPage() {
           { key: "schedules", label: "Nhiệm vụ định kỳ", show: Boolean(capabilities?.canCreateMission) },
           { key: "portal", label: "Quản trị Web nguồn", show: Boolean(capabilities?.canRequestPortalPerms) },
           { key: "audit", label: "Nhật ký Audit", show: Boolean(capabilities?.canViewAudit) },
+          { key: "password", label: "Đổi mật khẩu nội bộ", show: actor?.provider === "local" },
         ]
           .filter((t) => t.show)
           .map((t) => (
@@ -451,6 +455,69 @@ export default function SettingsPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </section>
+      )}
+      {/* Tab Đổi mật khẩu tài khoản nội bộ */}
+      {tab === "password" && actor?.provider === "local" && (
+        <section className="max-w-lg space-y-4 rounded-xl border border-slate-200 bg-white p-5">
+          <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
+            <KeyRound className="h-4 w-4 text-indigo-600" />
+            Đổi mật khẩu tài khoản nội bộ (@{actor.username})
+          </div>
+          <div className="space-y-3">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-700">Mật khẩu hiện tại *</label>
+              <input
+                type="password"
+                value={curPw}
+                onChange={(e) => setCurPw(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-700">Mật khẩu mới (tối thiểu 8 ký tự) *</label>
+              <input
+                type="password"
+                value={newPw}
+                onChange={(e) => setNewPw(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-700">Nhập lại mật khẩu mới *</label>
+              <input
+                type="password"
+                value={confirmPw}
+                onChange={(e) => setConfirmPw(e.target.value)}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (newPw.length < 8) {
+                  setError("Mật khẩu mới cần tối thiểu 8 ký tự.");
+                  return;
+                }
+                if (newPw !== confirmPw) {
+                  setError("Mật khẩu nhập lại chưa khớp.");
+                  return;
+                }
+                void run(async () => {
+                  await apiFetch("/api/v1/auth/change-password", {
+                    method: "POST",
+                    body: JSON.stringify({ currentPassword: curPw, newPassword: newPw }),
+                  });
+                  setCurPw("");
+                  setNewPw("");
+                  setConfirmPw("");
+                }, "Đã đổi mật khẩu tài khoản nội bộ thành công.");
+              }}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
+            >
+              Cập nhật mật khẩu
+            </button>
           </div>
         </section>
       )}
