@@ -27,7 +27,17 @@ export async function POST(request: NextRequest) {
     }
 
     const purposeRaw = String(form.get("purpose") ?? "SUBMISSION").toUpperCase();
-    const allowedPurposes = ["AVATAR", "SUBMISSION", "MISSION_ATTACHMENT", "COMMENT", "REGULATION"] as const;
+    const allowedPurposes = [
+      "AVATAR",
+      "SUBMISSION",
+      "MISSION_ATTACHMENT",
+      "COMMENT",
+      "REGULATION",
+      "CONDUCT_EVIDENCE",
+      "COUNCIL_DOCUMENT",
+      "INITIATIVE",
+      "GRAPHIC_ASSET",
+    ] as const;
     const purpose = allowedPurposes.includes(purposeRaw as (typeof allowedPurposes)[number])
       ? (purposeRaw as (typeof allowedPurposes)[number])
       : "SUBMISSION";

@@ -6,9 +6,9 @@ import { useSearchParams } from "next/navigation";
 import { FileSpreadsheet, Plus, Search } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
 import { useAuth } from "@/components/app-shell";
-import { ImportanceBadge, StatusBadge, UrgencyBadge } from "@/components/badges";
+import { ConfidentialityBadge, ImportanceBadge, StatusBadge, UrgencyBadge } from "@/components/badges";
 import { formatVnDateTime } from "@/lib/date";
-import type { ImportanceLevel, MissionStatus, UrgencyLevel } from "@/lib/constants";
+import type { ConfidentialityLevel, ImportanceLevel, MissionStatus, UrgencyLevel } from "@/lib/constants";
 
 interface MissionRow {
   id: string;
@@ -19,6 +19,8 @@ interface MissionRow {
   status: MissionStatus;
   importance: ImportanceLevel;
   urgency: UrgencyLevel;
+  confidentiality?: ConfidentialityLevel;
+  directiveAuthorities?: string[];
   deadlineOriginal: string;
   deadlineCurrent: string;
   isOverdue: boolean;
@@ -33,7 +35,8 @@ interface OptionItem {
 }
 
 function MissionsContent() {
-  const { capabilities } = useAuth();
+  const { actor, capabilities } = useAuth();
+  const isObserver = actor?.role === "OBSERVER";
   const searchParams = useSearchParams();
 
   const [missions, setMissions] = useState<MissionRow[]>([]);
@@ -104,19 +107,25 @@ function MissionsContent() {
     <div className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Bảng nhiệm vụ theo khối</h1>
+          <h1 className="text-2xl font-bold text-slate-900">
+            {isObserver ? "Kết quả nhiệm vụ đã hoàn thành" : "Bảng nhiệm vụ theo khối"}
+          </h1>
           <p className="text-sm text-slate-500">
-            Nhóm liên tiếp theo khối nhiệm vụ · Ưu tiên việc chưa hoàn thành và sắp đến hạn
+            {isObserver
+              ? "Tài khoản Ngoại lệ (Bậc 06) — Chỉ hiển thị sản phẩm đã hoàn thành và phê duyệt cuối cùng của Ban Biên tập"
+              : "Nhóm liên tiếp theo khối nhiệm vụ · Ưu tiên việc chưa hoàn thành và sắp đến hạn"}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <a
-            href={`/api/v1/reports/export?${exportQs.toString()}`}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
-          >
-            <FileSpreadsheet className="h-4 w-4" />
-            Xuất Excel
-          </a>
+          {!isObserver && (
+            <a
+              href={`/api/v1/reports/export?${exportQs.toString()}`}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              Xuất Excel
+            </a>
+          )}
           {capabilities?.canCreateMission && (
             <Link
               href="/missions/new"
@@ -279,6 +288,7 @@ function GroupRows({ groupName, items }: { groupName: string; items: MissionRow[
             <div className="flex flex-wrap gap-1">
               <UrgencyBadge urgency={m.urgency} />
               <ImportanceBadge importance={m.importance} />
+              <ConfidentialityBadge level={m.confidentiality} />
             </div>
           </td>
           <td className="whitespace-nowrap text-xs font-semibold text-slate-800">

@@ -13,11 +13,22 @@ export interface StoragePutResult {
   safeMime: string;
 }
 
+export type FilePurpose =
+  | "AVATAR"
+  | "SUBMISSION"
+  | "MISSION_ATTACHMENT"
+  | "COMMENT"
+  | "REGULATION"
+  | "CONDUCT_EVIDENCE"
+  | "COUNCIL_DOCUMENT"
+  | "INITIATIVE"
+  | "GRAPHIC_ASSET";
+
 export interface StorageAdapter {
   put(input: {
     buffer: Buffer;
     originalName: string;
-    purpose: "AVATAR" | "SUBMISSION" | "MISSION_ATTACHMENT" | "COMMENT" | "REGULATION";
+    purpose: FilePurpose;
   }): Promise<StoragePutResult>;
   open(storageKey: string): Promise<{ stream: ReadStream; sizeBytes: number }>;
   delete(storageKey: string): Promise<void>;
@@ -247,7 +258,16 @@ export async function saveUploadedFile(input: {
   buffer: Buffer;
   originalName: string;
   relativePath?: string | null;
-  purpose: "AVATAR" | "SUBMISSION" | "MISSION_ATTACHMENT" | "COMMENT" | "REGULATION";
+  purpose:
+    | "AVATAR"
+    | "SUBMISSION"
+    | "MISSION_ATTACHMENT"
+    | "COMMENT"
+    | "REGULATION"
+    | "CONDUCT_EVIDENCE"
+    | "COUNCIL_DOCUMENT"
+    | "INITIATIVE"
+    | "GRAPHIC_ASSET";
   uploaderId: string;
 }) {
   const stored = await storageAdapter.put({

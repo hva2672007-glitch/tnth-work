@@ -27,11 +27,13 @@ import {
 } from "lucide-react";
 import { apiFetch, randomIdempotencyKey } from "@/lib/api-client";
 import { useAuth } from "@/components/app-shell";
-import { ImportanceBadge, StatusBadge, UrgencyBadge, WorkloadBadge, type WorkloadLevelUi } from "@/components/badges";
+import { ConfidentialityBadge, ImportanceBadge, StatusBadge, UrgencyBadge, WorkloadBadge, type WorkloadLevelUi } from "@/components/badges";
 import {
   COMPLETION_MODE_LABELS,
+  MAX_REVISION_RETURNS,
   WEIGHT_OPTIONS,
   type CompletionMode,
+  type ConfidentialityLevel,
   type ImportanceLevel,
   type MissionStatus,
   type SubmissionMode,
@@ -47,6 +49,9 @@ interface MissionDetail {
   description: string;
   expectedOutcome: string;
   refs: { label: string; url: string }[];
+  directiveAuthorities?: string[];
+  confidentiality?: ConfidentialityLevel;
+  observerMode?: boolean;
   ownerName: string;
   creatorName: string;
   status: MissionStatus;
@@ -100,6 +105,8 @@ interface MissionDetail {
       evaluationDeadline: string;
       lateAgainstOriginalDeadline: boolean;
       extensionCount: number;
+      revisionCount?: number;
+      needsReassignment?: boolean;
       pendingExtension: {
         id: string;
         requestedDeadline: string;
@@ -296,13 +303,14 @@ export default function MissionDetailPage() {
   }, [id]);
 
   const loadMembersWithWorkload = useCallback(async () => {
+    if (actor?.role === "OBSERVER") return;
     try {
       const m = await apiFetch<MemberCandidate[]>("/api/v1/members?activityStatus=ACTIVE&includeWorkload=true");
-      setMembers(m);
+      setMembers(m.filter((x) => x.role !== "OBSERVER"));
     } catch {
       // ignore
     }
-  }, []);
+  }, [actor?.role]);
 
   useEffect(() => {
     let active = true;
@@ -483,12 +491,12 @@ export default function MissionDetailPage() {
 
   const modalCandidates = useMemo(() => {
     if (!modal) return [];
-    let list = members;
-    if (actor?.role === "TEAM_LEAD") {
+    let list = members.filter((m) => m.role !== "OBSERVER");
+    if (actor?.role === "TEAM_LEAD" || actor?.role === "TEAM_DEPUTY") {
       list = list.filter(
         (m) =>
           m.id === actor.memberId ||
-          ["HEAD", "ACTING_HEAD", "DEPUTY"].includes(m.role) ||
+          ["HEAD", "ACTING_HEAD", "DEPUTY_INSPECTOR", "DEPUTY"].includes(m.role) ||
           (m.teams ?? []).some((tm) => actor.leadTeamIds.includes(tm.id)),
       );
     }
@@ -564,7 +572,7 @@ export default function MissionDetailPage() {
 
   const availableTeamsForNewTask = useMemo(() => {
     const activeTeams = teams.filter((t) => t.active !== false);
-    if (actor?.role === "TEAM_LEAD" && actor.leadTeamIds.length > 0) {
+    if ((actor?.role === "TEAM_LEAD" || actor?.role === "TEAM_DEPUTY") && actor.leadTeamIds.length > 0) {
       return activeTeams.filter((t) => actor.leadTeamIds.includes(t.id));
     }
     return activeTeams;
@@ -683,6 +691,7 @@ export default function MissionDetailPage() {
               </span>
               <UrgencyBadge urgency={mission.urgency} />
               <ImportanceBadge importance={mission.importance} />
+              <ConfidentialityBadge level={mission.confidentiality} />
               <StatusBadge status={mission.status} kind="mission" />
             </div>
             <h1 className="mt-2 text-xl font-bold text-slate-900">{mission.title}</h1>
@@ -849,6 +858,21 @@ export default function MissionDetailPage() {
         </div>
 
         <div className="mt-4 space-y-2 border-t border-slate-100 pt-4 text-sm text-slate-700">
+          {mission.observerMode && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <strong>Chế độ xem dành cho Chuyên viên Trung ương Đoàn (Bậc 06):</strong> Hiển thị thông tin cơ bản và sản phẩm đã được nghiệm thu cuối cùng của nhiệm vụ hoàn thành.
+            </div>
+          )}
+          {mission.directiveAuthorities && mission.directiveAuthorities.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="font-semibold text-slate-600">Chỉ đạo của:</span>
+              {mission.directiveAuthorities.map((d) => (
+                <span key={d} className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-0.5 font-medium text-indigo-800">
+                  {d}
+                </span>
+              ))}
+            </div>
+          )}
           <p className="whitespace-pre-line">{mission.description}</p>
           {mission.expectedOutcome && (
             <p className="text-xs text-slate-600">
@@ -1180,7 +1204,15 @@ export default function MissionDetailPage() {
                       {task.assignments.map((a) => (
                         <tr key={a.id}>
                           <td className="font-medium text-slate-900">{a.memberName}</td>
-                          <td><StatusBadge status={a.status} kind="assignment" /></td>
+                          <td>
+                            <StatusBadge status={a.status} kind="assignment" />
+                            {(a.revisionCount ?? 0) > 0 && (
+                              <div className={`mt-0.5 text-[11px] font-semibold ${a.needsReassignment ? "text-red-700" : "text-amber-700"}`}>
+                                Trả sửa: {a.revisionCount}/{MAX_REVISION_RETURNS} lần
+                                {a.needsReassignment && " — Cần phân công lại!"}
+                              </div>
+                            )}
+                          </td>
                           <td className="whitespace-nowrap">
                             <div className="font-medium text-slate-800">{formatVnDateTime(a.evaluationDeadline)}</div>
                             {(a.extensionCount > 0 || a.lateAgainstOriginalDeadline) && (

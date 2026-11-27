@@ -1,6 +1,6 @@
 import { query, queryOne } from "@/server/db";
 import type { AuthActor } from "@/server/auth/session";
-import { buildMissionScopeClause } from "@/server/authorization/policy";
+import { buildMissionScopeClause, isManagerRole, isObserverRole } from "@/server/authorization/policy";
 import { DEFAULT_SLA_MINUTES, type UrgencyLevel } from "@/lib/constants";
 
 export type BottleneckCode =
@@ -56,6 +56,9 @@ export async function detectBottlenecks(
   items: BottleneckItem[];
   countsByCode: Record<string, number>;
 }> {
+  if (isObserverRole(actor.role)) {
+    return { items: [], countsByCode: {} };
+  }
   const sla = await getSlaConfig();
   const now = new Date();
   const nowMs = now.getTime();
@@ -379,7 +382,7 @@ export async function detectBottlenecks(
   }
 
   // B08: Yêu cầu phê duyệt quy chế / nâng bậc chờ quá SLA (mặc định 72 giờ)
-  if (actor.role !== "MEMBER") {
+  if (isManagerRole(actor.role)) {
     const staleApprovals = await query<{
       id: string;
       title: string;

@@ -1,7 +1,7 @@
 import ExcelJS from "exceljs";
 import { query } from "@/server/db";
 import type { AuthActor } from "@/server/auth/session";
-import { buildMissionScopeClause } from "@/server/authorization/policy";
+import { buildMissionScopeClause, isWorkerRole } from "@/server/authorization/policy";
 import { getKpiReport } from "@/server/reports/kpi";
 import { detectBottlenecks } from "@/server/reports/bottlenecks";
 import { writeAudit } from "@/server/audit/service";
@@ -60,7 +60,7 @@ export async function generateReportWorkbook(
   const scope = buildMissionScopeClause(actor, 1);
   const params: unknown[] = [...scope.params];
   const where: string[] = [scope.clause];
-  if (actor.role === "MEMBER") where.push(`m.status <> 'DRAFT'`);
+  if (isWorkerRole(actor.role)) where.push(`m.status <> 'DRAFT'`);
   if (!options?.allTime) {
     params.push(kpi.period.startAt, kpi.period.endAt);
     where.push(`m.deadline_current >= $${params.length - 1} AND m.deadline_current < $${params.length}`);
@@ -221,9 +221,12 @@ export async function generateReportWorkbook(
       { header: "Tổng khối lượng", key: "eligibleWeight", width: 16 },
       { header: "KL hoàn thành", key: "completedWeight", width: 16 },
       { header: "KL đúng/trước hạn", key: "ontimeWeight", width: 18 },
+      { header: "Điểm cộng (HĐĐH/SK/SL)", key: "bonusPoints", width: 20 },
       { header: "Trước hạn", key: "early", width: 11 },
       { header: "Đúng hạn", key: "onTime", width: 11 },
-      { header: "Trễ hạn", key: "late", width: 11 },
+      { header: "Trễ hạn (HT)", key: "late", width: 12 },
+      { header: "Số lần trễ hạn", key: "lateCount", width: 14 },
+      { header: "Số lần chuyển giao", key: "transferredCount", width: 16 },
       { header: "Chờ duyệt", key: "pendingReview", width: 11 },
       { header: "Chưa nộp", key: "unsubmitted", width: 11 },
       { header: "Từ chối", key: "declined", width: 11 },
@@ -240,9 +243,12 @@ export async function generateReportWorkbook(
         eligibleWeight: m.eligibleWeight,
         completedWeight: m.completedWeight,
         ontimeWeight: m.ontimeWeight,
+        bonusPoints: m.bonus?.totalBonusCompleted ?? 0,
         early: m.counts.early,
         onTime: m.counts.onTime,
         late: m.counts.lateCompleted,
+        lateCount: m.lateCount ?? 0,
+        transferredCount: m.transferredCount ?? 0,
         pendingReview: m.counts.pendingReview,
         unsubmitted: m.counts.unsubmitted,
         declined: m.counts.declined,

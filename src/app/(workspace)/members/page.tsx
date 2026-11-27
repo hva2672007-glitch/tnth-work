@@ -44,6 +44,7 @@ interface MemberRow {
   canViewDetail: boolean;
   canEdit: boolean;
   canRevoke: boolean;
+  allowedRoleChanges?: MemberRole[];
 }
 
 interface TeamRow {
@@ -115,7 +116,11 @@ interface WorkloadResponse {
 
 export default function MembersPage() {
   const { actor, capabilities } = useAuth();
-  const isManager = Boolean(actor && actor.role !== "MEMBER");
+  const isManager = Boolean(
+    actor && ["HEAD", "ACTING_HEAD", "DEPUTY_INSPECTOR", "DEPUTY", "TEAM_LEAD", "TEAM_DEPUTY"].includes(actor.role),
+  );
+  const isTeamLeaderRole = Boolean(actor && (actor.role === "TEAM_LEAD" || actor.role === "TEAM_DEPUTY"));
+  const grantCollabOnly = Boolean(capabilities?.canGrantCollaboratorOnly);
 
   const [viewTab, setViewTab] = useState<"directory" | "workload">("directory");
   const [members, setMembers] = useState<MemberRow[]>([]);
@@ -138,7 +143,9 @@ export default function MembersPage() {
   const [portalQuery, setPortalQuery] = useState("");
   const [portalResults, setPortalResults] = useState<PortalAccountItem[]>([]);
   const [selectedExtId, setSelectedExtId] = useState("");
-  const [grantRole, setGrantRole] = useState<Exclude<MemberRole, "HEAD">>("MEMBER");
+  const [grantRole, setGrantRole] = useState<Exclude<MemberRole, "HEAD">>(
+    grantCollabOnly ? "COLLABORATOR" : "MEMBER",
+  );
   const [grantTeamId, setGrantTeamId] = useState("");
   const [grantTeamTitle, setGrantTeamTitle] = useState<TeamTitle>("MEMBER");
 
@@ -235,13 +242,16 @@ export default function MembersPage() {
     setError(null);
     setNotice(null);
     try {
+      const effectiveRole = grantCollabOnly ? "COLLABORATOR" : grantRole;
+      const effectiveTitle: TeamTitle =
+        effectiveRole === "TEAM_LEAD" ? "LEADER" : effectiveRole === "TEAM_DEPUTY" ? "DEPUTY_LEADER" : "MEMBER";
       await apiFetch("/api/v1/members/access", {
         method: "POST",
         body: JSON.stringify({
           externalAccountId: selectedExtId,
-          role: grantRole,
+          role: effectiveRole,
           primaryTeamId: grantTeamId,
-          primaryTeamTitle: grantRole === "TEAM_LEAD" ? grantTeamTitle : "MEMBER",
+          primaryTeamTitle: effectiveTitle,
         }),
       });
       setNotice("Đã cấp quyền truy cập Web Phân công cho tài khoản đã chọn.");
@@ -283,6 +293,9 @@ export default function MembersPage() {
     setError(null);
     setNotice(null);
     try {
+      const effectiveRole = grantCollabOnly ? "COLLABORATOR" : grantRole;
+      const effectiveTitle: TeamTitle =
+        effectiveRole === "TEAM_LEAD" ? "LEADER" : effectiveRole === "TEAM_DEPUTY" ? "DEPUTY_LEADER" : "MEMBER";
       const created = await apiFetch<{ memberId: string; memberCode: string; username: string; displayName: string }>(
         "/api/v1/members/local",
         {
@@ -293,9 +306,9 @@ export default function MembersPage() {
             password: localPassword,
             email: localEmail.trim() || undefined,
             currentOrg: localOrg.trim() || undefined,
-            role: grantRole,
+            role: effectiveRole,
             primaryTeamId: grantTeamId,
-            primaryTeamTitle: grantRole === "TEAM_LEAD" ? grantTeamTitle : "MEMBER",
+            primaryTeamTitle: effectiveTitle,
           }),
         },
       );
@@ -340,6 +353,25 @@ export default function MembersPage() {
     }
   };
 
+  const handleChangeRole = async (m: MemberRow, newRole: MemberRole) => {
+    const reason = window.prompt(
+      `Nhập lý do chuyển bậc ${m.displayName} từ ${ROLE_LABELS[m.role].code} sang ${ROLE_LABELS[newRole].code} (bắt buộc):`,
+    );
+    if (!reason) return;
+    setError(null);
+    setNotice(null);
+    try {
+      await apiFetch(`/api/v1/members/${m.id}/role`, {
+        method: "POST",
+        body: JSON.stringify({ newRole, reason }),
+      });
+      setNotice(`Đã chuyển ${m.displayName} sang ${ROLE_LABELS[newRole].full}.`);
+      await loadDirectory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không thể thay đổi cấp bậc.");
+    }
+  };
+
   const handleRevoke = async (m: MemberRow) => {
     const reason = window.prompt(`Nhập lý do thu hồi quyền truy cập của ${m.displayName} (bắt buộc):`);
     if (!reason) return;
@@ -363,9 +395,14 @@ export default function MembersPage() {
   };
 
   const visibleTeams =
-    viewTab === "workload" && actor?.role === "TEAM_LEAD" && actor.leadTeamIds.length > 0
+    viewTab === "workload" && isTeamLeaderRole && actor && actor.leadTeamIds.length > 0
       ? teams.filter((t) => actor.leadTeamIds.includes(t.id))
       : teams;
+
+  const grantableTeams =
+    grantCollabOnly && actor && actor.leadTeamIds.length > 0
+      ? teams.filter((t) => t.active && actor.leadTeamIds.includes(t.id))
+      : teams.filter((t) => t.active);
 
   return (
     <div className="space-y-6">
@@ -373,7 +410,7 @@ export default function MembersPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Thành viên &amp; Tổ chuyên môn</h1>
           <p className="text-sm text-slate-500">
-            5 cấp bậc · 7 tổ chuyên môn · Theo dõi tải công việc từng nhân sự để điều phối hợp lý
+            9 cấp bậc (01.01–06) · 7 tổ chuyên môn · Theo dõi tải công việc từng nhân sự để điều phối hợp lý
           </p>
         </div>
         {capabilities?.canGrantAccess && (
@@ -413,7 +450,7 @@ export default function MembersPage() {
           >
             <Activity className="h-4 w-4" />
             Tình hình công việc nhân sự
-            {actor?.role === "TEAM_LEAD" ? " (Tổ phụ trách)" : " (Toàn Ban)"}
+            {isTeamLeaderRole ? " (Tổ phụ trách)" : " (Toàn Ban)"}
           </button>
         </div>
       )}
@@ -540,14 +577,23 @@ export default function MembersPage() {
                   <div>
                     <label className="mb-1 block text-xs font-semibold text-slate-700">Cấp bậc cấp quyền</label>
                     <select
-                      value={grantRole}
+                      value={grantCollabOnly ? "COLLABORATOR" : grantRole}
+                      disabled={grantCollabOnly}
                       onChange={(e) => setGrantRole(e.target.value as Exclude<MemberRole, "HEAD">)}
-                      className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
+                      className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs disabled:bg-slate-100"
                     >
-                      <option value="MEMBER">{ROLE_LABELS.MEMBER.full}</option>
-                      <option value="TEAM_LEAD">{ROLE_LABELS.TEAM_LEAD.full}</option>
-                      <option value="DEPUTY">{ROLE_LABELS.DEPUTY.full}</option>
-                      <option value="ACTING_HEAD">{ROLE_LABELS.ACTING_HEAD.full}</option>
+                      <option value="COLLABORATOR">{ROLE_LABELS.COLLABORATOR.full}</option>
+                      {!grantCollabOnly && (
+                        <>
+                          <option value="MEMBER">{ROLE_LABELS.MEMBER.full}</option>
+                          <option value="TEAM_DEPUTY">{ROLE_LABELS.TEAM_DEPUTY.full}</option>
+                          <option value="TEAM_LEAD">{ROLE_LABELS.TEAM_LEAD.full}</option>
+                          <option value="DEPUTY">{ROLE_LABELS.DEPUTY.full}</option>
+                          <option value="DEPUTY_INSPECTOR">{ROLE_LABELS.DEPUTY_INSPECTOR.full}</option>
+                          <option value="ACTING_HEAD">{ROLE_LABELS.ACTING_HEAD.full}</option>
+                          <option value="OBSERVER">{ROLE_LABELS.OBSERVER.full}</option>
+                        </>
+                      )}
                     </select>
                   </div>
                   <div>
@@ -557,7 +603,7 @@ export default function MembersPage() {
                       onChange={(e) => setGrantTeamId(e.target.value)}
                       className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
                     >
-                      {teams.filter((t) => t.active).map((t) => (
+                      {grantableTeams.map((t) => (
                         <option key={t.id} value={t.id}>
                           {t.name}
                         </option>
@@ -665,14 +711,23 @@ export default function MembersPage() {
                 <div>
                   <label className="mb-1 block text-xs font-semibold text-slate-700">Cấp bậc</label>
                   <select
-                    value={grantRole}
+                    value={grantCollabOnly ? "COLLABORATOR" : grantRole}
+                    disabled={grantCollabOnly}
                     onChange={(e) => setGrantRole(e.target.value as Exclude<MemberRole, "HEAD">)}
-                    className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
+                    className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs disabled:bg-slate-100"
                   >
-                    <option value="MEMBER">{ROLE_LABELS.MEMBER.full}</option>
-                    <option value="TEAM_LEAD">{ROLE_LABELS.TEAM_LEAD.full}</option>
-                    <option value="DEPUTY">{ROLE_LABELS.DEPUTY.full}</option>
-                    <option value="ACTING_HEAD">{ROLE_LABELS.ACTING_HEAD.full}</option>
+                    <option value="COLLABORATOR">{ROLE_LABELS.COLLABORATOR.full}</option>
+                    {!grantCollabOnly && (
+                      <>
+                        <option value="MEMBER">{ROLE_LABELS.MEMBER.full}</option>
+                        <option value="TEAM_DEPUTY">{ROLE_LABELS.TEAM_DEPUTY.full}</option>
+                        <option value="TEAM_LEAD">{ROLE_LABELS.TEAM_LEAD.full}</option>
+                        <option value="DEPUTY">{ROLE_LABELS.DEPUTY.full}</option>
+                        <option value="DEPUTY_INSPECTOR">{ROLE_LABELS.DEPUTY_INSPECTOR.full}</option>
+                        <option value="ACTING_HEAD">{ROLE_LABELS.ACTING_HEAD.full}</option>
+                        <option value="OBSERVER">{ROLE_LABELS.OBSERVER.full}</option>
+                      </>
+                    )}
                   </select>
                 </div>
                 <div>
@@ -682,7 +737,7 @@ export default function MembersPage() {
                     onChange={(e) => setGrantTeamId(e.target.value)}
                     className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
                   >
-                    {teams.filter((t) => t.active).map((t) => (
+                    {grantableTeams.map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.name}
                       </option>
@@ -762,12 +817,16 @@ export default function MembersPage() {
               onChange={(e) => setRoleFilter(e.target.value)}
               className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
             >
-              <option value="">Tất cả cấp bậc</option>
-              <option value="HEAD">Bậc 01.01 — Trưởng Ban</option>
-              <option value="ACTING_HEAD">Bậc 01.02 — Quyền Trưởng Ban</option>
-              <option value="DEPUTY">Bậc 02 — Phó Ban</option>
-              <option value="TEAM_LEAD">Bậc 03 — Lãnh đạo Tổ</option>
-              <option value="MEMBER">Bậc 04 — Thành viên</option>
+              <option value="">Tất cả cấp bậc (9 bậc)</option>
+              <option value="HEAD">{ROLE_LABELS.HEAD.full}</option>
+              <option value="ACTING_HEAD">{ROLE_LABELS.ACTING_HEAD.full}</option>
+              <option value="DEPUTY_INSPECTOR">{ROLE_LABELS.DEPUTY_INSPECTOR.full}</option>
+              <option value="DEPUTY">{ROLE_LABELS.DEPUTY.full}</option>
+              <option value="TEAM_LEAD">{ROLE_LABELS.TEAM_LEAD.full}</option>
+              <option value="TEAM_DEPUTY">{ROLE_LABELS.TEAM_DEPUTY.full}</option>
+              <option value="MEMBER">{ROLE_LABELS.MEMBER.full}</option>
+              <option value="COLLABORATOR">{ROLE_LABELS.COLLABORATOR.full}</option>
+              <option value="OBSERVER">{ROLE_LABELS.OBSERVER.full}</option>
             </select>
           </div>
 
@@ -851,6 +910,24 @@ export default function MembersPage() {
                               >
                                 <KeyRound className="h-3 w-3" /> Đặt lại MK
                               </button>
+                            )}
+                            {m.allowedRoleChanges && m.allowedRoleChanges.length > 0 && (
+                              <select
+                                defaultValue=""
+                                onChange={(e) => {
+                                  const val = e.target.value as MemberRole;
+                                  e.target.value = "";
+                                  if (val) void handleChangeRole(m, val);
+                                }}
+                                className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900"
+                              >
+                                <option value="">Chuyển bậc...</option>
+                                {m.allowedRoleChanges.map((r) => (
+                                  <option key={r} value={r}>
+                                    → {ROLE_LABELS[r].code} ({ROLE_LABELS[r].name})
+                                  </option>
+                                ))}
+                              </select>
                             )}
                             {m.canRevoke && (
                               <button

@@ -16,8 +16,10 @@ import {
   setMockPortalSourceDown,
 } from "@/server/auth/portal-adapter";
 import {
+  changeMemberRole,
   changeOwnLocalPassword,
   createLocalMember,
+  getMemberDetail,
   getMembersWorkload,
   grantMemberAccess,
   listMembersDirectory,
@@ -25,6 +27,23 @@ import {
   revokeMemberAccess,
   updateMemberProfile,
 } from "@/server/members/service";
+import {
+  concludeCouncilItem,
+  createConductReport,
+  createCouncilItem,
+  evaluateCouncilItemDeadline,
+  getCouncilItemDetail,
+  listConductReports,
+  submitCouncilOpinion,
+} from "@/server/governance/service";
+import {
+  createGraphicAsset,
+  createInitiative,
+  listGraphicAssets,
+  reviewInitiative,
+  reviewMetricLog,
+  submitMetricLog,
+} from "@/server/kpi-extras/service";
 import {
   addTaskToMission,
   assignTaskMembers,
@@ -50,7 +69,7 @@ import {
   proposePromoteActingHead,
   proposeRegulationAmendment,
 } from "@/server/approvals/service";
-import { finalizeKpiPeriod, getKpiReport } from "@/server/reports/kpi";
+import { finalizeKpiPeriod, getKpiReport, reopenKpiPeriod } from "@/server/reports/kpi";
 import { detectBottlenecks } from "@/server/reports/bottlenecks";
 import { generateReportWorkbook } from "@/server/reports/excel";
 import { runScheduledJobs } from "@/server/jobs/runner";
@@ -687,5 +706,258 @@ describe("Integration End-to-End theo kịch bản mục 18.3", () => {
     const afterRejectTransfer = await getMissionDetail(leadNd, mission.id);
     expect(afterRejectTransfer.extensionRequests.find((e) => e.id === ext2.id)?.status).toBe("REJECTED");
     expect(afterRejectTransfer.tasks[1].assignments.some((a) => a.memberId === memNd2.memberId && a.status === "PENDING")).toBe(true);
+  });
+
+  it("Kịch bản 13: Toàn bộ luồng V2 (9 bậc, 03.02 cấp 05, trả lại tối đa 2 lần, Bậc 06 bảo mật, Thẩm tra ẩn danh, HĐĐH 5 ngày 2/3 & cảnh báo đỏ, Sáng kiến/Số liệu/KPI cộng, Kho Đồ họa)", async () => {
+    const teamThamTraRes = await query<{ id: string }>(`SELECT id FROM teams WHERE code = 'THAM_TRA'`);
+    const teamThamTraId = teamThamTraRes[0].id;
+
+    // 1. Tạo các vai trò V2: 02.01 (DEPUTY_INSPECTOR), 03.02 (TEAM_DEPUTY), 04 Tổ Thẩm tra, 06 (OBSERVER)
+    const inspCreated = await createLocalMember(head, {
+      username: "phoban.thamtra",
+      displayName: "Phó Ban Thẩm Tra",
+      password: "Password@2026",
+      role: "DEPUTY_INSPECTOR",
+      primaryTeamId: teamThamTraId,
+      primaryTeamTitle: "LEADER",
+    });
+    const tdCreated = await createLocalMember(head, {
+      username: "topho.noidung",
+      displayName: "Tổ Phó Nội Dung",
+      password: "Password@2026",
+      role: "TEAM_DEPUTY",
+      primaryTeamId: teamNdId,
+      primaryTeamTitle: "DEPUTY_LEADER",
+    });
+    const inspMemCreated = await createLocalMember(head, {
+      username: "mem.thamtra",
+      displayName: "Thành Viên Thẩm Tra",
+      password: "Password@2026",
+      role: "MEMBER",
+      primaryTeamId: teamThamTraId,
+    });
+    const obsCreated = await createLocalMember(head, {
+      username: "chuyenvien.tw",
+      displayName: "Chuyên Viên TW Đoàn",
+      password: "Password@2026",
+      role: "OBSERVER",
+      primaryTeamId: teamNdId,
+    });
+
+    const inspector = (await loadActorByMemberId(inspCreated.memberId))!;
+    const teamDeputy = (await loadActorByMemberId(tdCreated.memberId))!;
+    const inspMem = (await loadActorByMemberId(inspMemCreated.memberId))!;
+    const observer = (await loadActorByMemberId(obsCreated.memberId))!;
+
+    // 2. Bậc 03.02 cấp tài khoản Bậc 05 (COLLABORATOR) trong tổ mình OK, cấm cấp Bậc 04 hoặc tổ khác
+    const ctvCreated = await createLocalMember(teamDeputy, {
+      username: "ctv.moi.nd",
+      displayName: "Cộng Tác Viên Nội Dung",
+      password: "Password@2026",
+      role: "COLLABORATOR",
+      primaryTeamId: teamNdId,
+    });
+    await expect(
+      createLocalMember(teamDeputy, {
+        username: "mem.cam",
+        displayName: "Cấm Cấp Bậc 04",
+        password: "Password@2026",
+        role: "MEMBER",
+        primaryTeamId: teamNdId,
+      }),
+    ).rejects.toThrow();
+
+    // Bậc 03.01 chuyển CTV (05) lên Thành viên (04) trong tổ mình
+    await changeMemberRole(leadNd, ctvCreated.memberId, "MEMBER", "CTV hoàn thành xuất sắc thử việc");
+    const promotedCtv = await loadActorByMemberId(ctvCreated.memberId);
+    expect(promotedCtv?.role).toBe("MEMBER");
+
+    // Hồ sơ thành viên mới: Đoàn viên / Đảng viên / Chức vụ Đoàn - Hội - Đội
+    await updateMemberProfile(memNd, memNd.memberId, {
+      isUnionMember: true,
+      unionJoinedOn: "2020-03-26",
+      isPartyMember: true,
+      partyProbationaryOn: "2024-05-19",
+      partyOfficialOn: "2025-05-19",
+      youthUnionPosition: "Ủy viên BCH Đoàn trường",
+    });
+    const memDetail = await getMemberDetail(head, memNd.memberId);
+    expect(memDetail.profile?.isUnionMember).toBe(true);
+    expect(memDetail.profile?.isPartyMember).toBe(true);
+    expect(memDetail.profile?.partyOfficialOn).toBe("2025-05-19");
+    expect(memDetail.profile?.youthUnionPosition).toBe("Ủy viên BCH Đoàn trường");
+
+    // 3. Nhiệm vụ V2 (chỉ đạo + Tuyệt mật) + Quy tắc trả lại tối đa 2 lần + Quyền Bậc 06 (OBSERVER)
+    const due = new Date(Date.now() + 24 * 3600_000).toISOString();
+    const mV2 = await createMission(head, {
+      groupId: groupAId,
+      title: "Nhiệm vụ V2 Tuyệt mật & Kiểm thử trả lại 2 lần",
+      description: "Kiểm thử toàn diện V2",
+      directiveAuthorities: ["Ban Bí thư Trung ương Đoàn", "Bí thư thứ nhất Trung ương Đoàn"],
+      confidentiality: "TOP_SECRET",
+      ownerId: head.memberId,
+      deadline: due,
+      tasks: [
+        {
+          tempKey: "tv2",
+          title: "Biên tập sản phẩm V2",
+          ownerTeamId: teamNdId,
+          weight: 2,
+          deadline: due,
+          assigneeIds: [memNd.memberId],
+        },
+      ],
+    });
+    // Bậc 06 bị chặn xem nhiệm vụ chưa hoàn thành & bị chặn xem danh bạ/KPI
+    await expect(getMissionDetail(observer, mV2.id)).rejects.toThrow();
+    await expect(listMembersDirectory(observer)).rejects.toThrow();
+    await expect(getKpiReport(observer)).rejects.toThrow();
+
+    const mV2Detail = await getMissionDetail(leadNd, mV2.id);
+    const taskV2 = mV2Detail.tasks[0];
+    await assignmentAction(memNd, taskV2.assignments[0].id, "accept", {});
+
+    // Nộp lần 1 -> Trả sửa lần 1
+    const sub1 = await submitTaskProduct(memNd, taskV2.id, { note: "Bản 1", textContent: "Nội dung bản 1" });
+    await reviewSubmissionVersion(leadNd, sub1.versionId, "REVISION_REQUIRED", { note: "Cần sửa bố cục" });
+    const afterRev1 = await getMissionDetail(leadNd, mV2.id);
+    expect(afterRev1.tasks[0].assignments[0].revisionCount).toBe(1);
+    expect(afterRev1.tasks[0].assignments[0].needsReassignment).toBe(false);
+
+    // Nộp lần 2 -> Trả sửa lần 2 -> Kích hoạt cảnh báo vượt 2 lần trả lại (needsReassignment = true)
+    const sub2 = await submitTaskProduct(memNd, taskV2.id, { note: "Bản 2", textContent: "Nội dung bản 2" });
+    await reviewSubmissionVersion(leadNd, sub2.versionId, "REVISION_REQUIRED", { note: "Vẫn chưa đạt, cần phân công lại" });
+    const afterRev2 = await getMissionDetail(leadNd, mV2.id);
+    expect(afterRev2.tasks[0].assignments[0].revisionCount).toBe(2);
+    expect(afterRev2.tasks[0].assignments[0].needsReassignment).toBe(true);
+
+    // Nộp bản đạt & hoàn thành nhiệm vụ -> Bậc 06 xem được kết quả đã duyệt nhưng KHÔNG thấy thông tin nội bộ
+    const sub3 = await submitTaskProduct(memNd, taskV2.id, { note: "Bản hoàn thiện", textContent: "Nội dung hoàn thiện cuối cùng" });
+    await reviewSubmissionVersion(leadNd, sub3.versionId, "APPROVED", { note: "Đạt chuẩn" });
+    await missionLifecycleAction(head, mV2.id, "complete", {});
+
+    const obsView = await getMissionDetail(observer, mV2.id);
+    expect(obsView.observerMode).toBe(true);
+    expect(obsView.confidentiality).toBe("TOP_SECRET");
+    expect(obsView.directiveAuthorities).toContain("Ban Bí thư Trung ương Đoàn");
+    expect(obsView.tasks[0].assignments).toHaveLength(0);
+    expect(obsView.tasks[0].submissions).toHaveLength(1);
+    expect(obsView.tasks[0].submissions[0].state).toBe("APPROVED");
+    expect(obsView.comments).toHaveLength(0);
+    expect(obsView.activities).toHaveLength(0);
+
+    // 4. Phiếu ghi nhận thái độ bảo mật (Tổ Thẩm tra) + Trình Hồ sơ nhân sự ra HĐĐH
+    const rep = await createConductReport(inspMem, {
+      subjectMemberId: memMedia.memberId,
+      issueSummary: "Chậm phản hồi tin nhắn điều phối chiến dịch nhiều lần",
+      evidenceText: "Ảnh chụp lịch sử nhóm làm việc ngày 25/11",
+      proposedSolution: "Nhắc nhở trực tiếp và theo dõi thêm 02 tuần",
+    });
+
+    // Chính người gửi (04 Tổ Thẩm tra) & Phó Ban thường (02.02) KHÔNG được xem lại phiếu đã gửi
+    const inspMemList = await listConductReports(inspMem);
+    expect(inspMemList.canViewAll).toBe(false);
+    expect(inspMemList.reports).toHaveLength(0);
+    expect(inspMemList.mySubmittedCount).toBeGreaterThanOrEqual(1);
+
+    const deputyList = await listConductReports(deputy);
+    expect(deputyList.canViewAll).toBe(false);
+    expect(deputyList.reports).toHaveLength(0);
+
+    // Bậc 02.01 xem đầy đủ tên người gửi & trình hồ sơ nhân sự ra HĐĐH
+    const inspView = await listConductReports(inspector);
+    expect(inspView.canViewAll).toBe(true);
+    expect(inspView.reports.find((r) => r.id === rep.id)?.reporterName).toBe("Thành Viên Thẩm Tra");
+
+    const dossier = await createCouncilItem(inspector, {
+      itemType: "PERSONNEL_DOSSIER",
+      title: "Hồ sơ nhân sự kiểm điểm thái độ làm việc",
+      subjectMemberId: memMedia.memberId,
+      inspectorProposal: "Đề xuất nhắc nhở rút kinh nghiệm cấp tổ",
+      conductReportIds: [rep.id],
+    });
+
+    // 5. Góp ý mù & Ẩn danh trên HĐĐH + Cảnh báo đỏ quá 5 ngày (< 2/3) + Tự khóa khi >= 2/3 + Kết luận
+    const depBeforeVote = await getCouncilItemDetail(deputy, dossier.id);
+    expect(depBeforeVote.canViewOthersOpinions).toBe(false);
+    expect(depBeforeVote.opinions).toHaveLength(0);
+    // Ẩn danh tuyệt đối người gửi phiếu đối với 02.02!
+    expect(depBeforeVote.linkedReports[0].reporterName).toBeNull();
+
+    // 02.02 góp ý -> được mở xem ý kiến khác
+    await submitCouncilOpinion(deputy, dossier.id, { choice: "AGREE", opinionText: "Đồng ý phương án nhắc nhở" });
+    const depAfterVote = await getCouncilItemDetail(deputy, dossier.id);
+    expect(depAfterVote.canViewOthersOpinions).toBe(true);
+    expect(depAfterVote.opinions).toHaveLength(1);
+
+    // Giả lập đã quá 5 ngày khi mới có 1 phiếu (< 2/3) -> RED_ALERT + danh sách thiếu đích danh cho 01.01-02.02
+    await query(`UPDATE council_items SET opinion_deadline = now() - interval '1 hour' WHERE id = $1`, [dossier.id]);
+    const evalRed = await evaluateCouncilItemDeadline(dossier.id);
+    expect(evalRed.status).toBe("RED_ALERT");
+    const headRedDetail = await getCouncilItemDetail(head, dossier.id);
+    expect(headRedDetail.status).toBe("RED_ALERT");
+    expect(headRedDetail.missingVoters.length).toBeGreaterThan(0);
+    const leadRedDetail = await getCouncilItemDetail(leadNd, dossier.id);
+    expect(leadRedDetail.missingVoters).toHaveLength(0);
+
+    // Các thành viên HĐĐH còn lại góp ý đủ >= 2/3 -> tự khóa sang AWAITING_MEETING
+    for (const voter of [head, acting, inspector, leadNd, leadMedia, teamDeputy]) {
+      const cur = await getCouncilItemDetail(voter, dossier.id);
+      if (cur.canSubmitOpinion && !cur.hasMyOpinion) {
+        await submitCouncilOpinion(voter, dossier.id, { choice: "AGREE", opinionText: "Thống nhất đề xuất của 02.01" });
+      }
+    }
+    const afterQuorum = await getCouncilItemDetail(head, dossier.id);
+    expect(afterQuorum.status).toBe("AWAITING_MEETING");
+
+    // 02.02 không được chốt kết luận; 02.01 chốt kết luận thành công -> COMPLETED
+    await expect(concludeCouncilItem(deputy, dossier.id, "Cấm 02.02 chốt")).rejects.toThrow();
+    await concludeCouncilItem(inspector, dossier.id, "Hội đồng điều hành thống nhất nhắc nhở rút kinh nghiệm cấp tổ.");
+    const concluded = await getCouncilItemDetail(head, dossier.id);
+    expect(concluded.status).toBe("COMPLETED");
+
+    // 6. Sáng kiến chủ động, Số liệu KPI & Kho Đồ họa
+    const ini = await createInitiative(memNd, {
+      kind: "INITIATIVE",
+      title: "Bộ mẫu bài đăng nhanh sự kiện trường học",
+      description: "Giảm 50% thời gian thiết kế tin nóng",
+      participantIds: [memMedia.memberId],
+    });
+    await reviewInitiative(leadNd, ini.id, { decision: "APPROVED", pointsLead: 2, pointsParticipant: 1, reviewNote: "Rất thực tế" });
+
+    const mlog = await submitMetricLog(memNd, {
+      title: "Duyệt tin bài cơ sở",
+      metricUnit: "bài viết",
+      quantity: 5,
+      pointsPerUnit: 0.5,
+    });
+    expect(mlog.computedPoints).toBe(2.5);
+    await reviewMetricLog(leadNd, mlog.id, "APPROVED");
+
+    const graphic = await createGraphicAsset(leadNd, {
+      title: "Logo Ban Biên tập TNTH chuẩn 2026",
+      category: "LOGO",
+      externalUrl: "https://drive.google.com/file/d/logo-tnth",
+      tags: ["logo", "brand"],
+    });
+    expect(graphic.id).toBeTruthy();
+    const graphicsForMem = await listGraphicAssets(memNd);
+    expect(graphicsForMem.some((g) => g.id === graphic.id)).toBe(true);
+    await expect(listGraphicAssets(observer)).rejects.toThrow();
+
+    // Kiểm tra điểm cộng KPI V2 tự động phản ánh vào báo cáo KPI tháng (mở lại kỳ nếu Kịch bản trước đã chốt)
+    const preKpi = await getKpiReport(head);
+    if (preKpi.period.status === "FINALIZED") {
+      await reopenKpiPeriod(head, preKpi.period.id, "Mở lại kỳ để cập nhật điểm cộng KPI V2");
+    }
+    const kpiV2 = await getKpiReport(head);
+    const memNdKpi = kpiV2.members.find((m) => m.memberId === memNd.memberId)!;
+    expect(memNdKpi.bonus.initiativePoints).toBe(2);
+    expect(memNdKpi.bonus.metricPoints).toBe(2.5);
+    const inspMemKpi = kpiV2.members.find((m) => m.memberId === inspMem.memberId)!;
+    expect(inspMemKpi.bonus.conductReports).toBe(1);
+    const inspectorKpi = kpiV2.members.find((m) => m.memberId === inspector.memberId)!;
+    expect(inspectorKpi.bonus.councilSubmissions).toBe(1);
+    expect(inspectorKpi.bonus.councilConclusions).toBe(1);
   });
 });

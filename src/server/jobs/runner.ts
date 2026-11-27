@@ -2,6 +2,7 @@ import { query, withTransaction } from "@/server/db";
 import { createNotification, createNotifications } from "@/server/notifications/service";
 import { loadActorByMemberId } from "@/server/auth/session";
 import { createMission, type CreateTaskInput } from "@/server/missions/workflow";
+import { evaluateAllPendingCouncilItems } from "@/server/governance/service";
 import { DEFAULT_REMINDER_OFFSETS_MINUTES, type CompletionMode, type ImportanceLevel, type UrgencyLevel } from "@/lib/constants";
 import { computeNextOccurrence } from "@/lib/date";
 
@@ -10,6 +11,8 @@ export interface JobRunReport {
   overdueAlertsCreated: number;
   recurringMissionsCreated: number;
   recurringMissedMarked: number;
+  councilLocked: number;
+  councilRedAlerts: number;
   errors: string[];
 }
 
@@ -25,6 +28,8 @@ export async function runScheduledJobs(now: Date = new Date()): Promise<JobRunRe
     overdueAlertsCreated: 0,
     recurringMissionsCreated: 0,
     recurringMissedMarked: 0,
+    councilLocked: 0,
+    councilRedAlerts: 0,
     errors: [],
   };
 
@@ -232,6 +237,15 @@ export async function runScheduledJobs(now: Date = new Date()): Promise<JobRunRe
     } catch (err) {
       report.errors.push(`Lịch ${s.name}: ${err instanceof Error ? err.message : "Lỗi không xác định"}`);
     }
+  }
+
+  // 4: Quét hạn 5 ngày lấy ý kiến & ngưỡng 2/3 của Hội đồng điều hành
+  try {
+    const councilRes = await evaluateAllPendingCouncilItems(now);
+    report.councilLocked = councilRes.locked;
+    report.councilRedAlerts = councilRes.redAlerts;
+  } catch (err) {
+    report.errors.push(`Hội đồng điều hành: ${err instanceof Error ? err.message : "Lỗi không xác định"}`);
   }
 
   return report;

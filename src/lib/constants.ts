@@ -1,9 +1,20 @@
-export type MemberRole = "HEAD" | "ACTING_HEAD" | "DEPUTY" | "TEAM_LEAD" | "MEMBER";
+export type MemberRole =
+  | "HEAD"
+  | "ACTING_HEAD"
+  | "DEPUTY_INSPECTOR"
+  | "DEPUTY"
+  | "TEAM_LEAD"
+  | "TEAM_DEPUTY"
+  | "MEMBER"
+  | "COLLABORATOR"
+  | "OBSERVER";
+
 export type ActivityStatus = "ACTIVE" | "ON_LEAVE" | "INACTIVE";
 export type TeamTitle = "MEMBER" | "LEADER" | "DEPUTY_LEADER";
 
 export type UrgencyLevel = "FLASH" | "VERY_URGENT" | "URGENT" | "NORMAL";
 export type ImportanceLevel = "KEY" | "NORMAL";
+export type ConfidentialityLevel = "NORMAL" | "CONFIDENTIAL" | "TOP_SECRET";
 export type CompletionMode = "TASKS_ONLY" | "TASKS_AND_PUBLICATIONS" | "PUBLICATIONS_ONLY";
 export type SubmissionMode = "INDIVIDUAL" | "SHARED";
 
@@ -40,12 +51,71 @@ export type AssignmentStatus =
 export type ApprovalType = "REGULATION_AMENDMENT" | "ROLE_PROMOTION_HEAD";
 export type ApprovalStatus = "PENDING" | "READY_TO_APPLY" | "APPLIED" | "REJECTED" | "CANCELLED" | "STALE";
 
+export type CouncilItemType = "PERSONNEL_DOSSIER" | "GENERAL_DOCUMENT";
+export type CouncilItemStatus = "OPEN_FOR_OPINION" | "RED_ALERT" | "AWAITING_MEETING" | "COMPLETED";
+export type CouncilOpinionChoice = "AGREE" | "DISAGREE" | "OTHER" | "COMMENT";
+
+export type InitiativeKind = "IDEA" | "INITIATIVE" | "PRODUCT";
+export type GraphicCategory = "LOGO" | "FRAME" | "TEMPLATE" | "BRAND_GUIDELINE" | "FONT" | "ICON" | "OTHER";
+
 export const ROLE_LABELS: Record<MemberRole, { code: string; name: string; full: string }> = {
-  HEAD: { code: "Bậc 01.01", name: "Trưởng Ban Biên tập", full: "Bậc 01.01 — Trưởng Ban Biên tập" },
-  ACTING_HEAD: { code: "Bậc 01.02", name: "Quyền Trưởng Ban Biên tập", full: "Bậc 01.02 — Quyền Trưởng Ban Biên tập" },
-  DEPUTY: { code: "Bậc 02", name: "Phó Trưởng Ban Biên tập", full: "Bậc 02 — Phó Trưởng Ban Biên tập" },
-  TEAM_LEAD: { code: "Bậc 03", name: "Trưởng, Phó Tổ chuyên môn", full: "Bậc 03 — Trưởng, Phó Tổ chuyên môn" },
-  MEMBER: { code: "Bậc 04", name: "Thành viên (Mem)", full: "Bậc 04 — Thành viên" },
+  HEAD: {
+    code: "Bậc 01.01",
+    name: "Trưởng Ban Biên tập",
+    full: "Bậc 01.01 — Trưởng Ban Biên tập",
+  },
+  ACTING_HEAD: {
+    code: "Bậc 01.02",
+    name: "Quyền Trưởng Ban Biên tập",
+    full: "Bậc 01.02 — Quyền Trưởng Ban Biên tập",
+  },
+  DEPUTY_INSPECTOR: {
+    code: "Bậc 02.01",
+    name: "Phó Trưởng Ban kiêm Tổ trưởng Tổ Thẩm tra - Giám sát",
+    full: "Bậc 02.01 — Phó Trưởng Ban kiêm Tổ trưởng Tổ Thẩm tra - Giám sát",
+  },
+  DEPUTY: {
+    code: "Bậc 02.02",
+    name: "Phó Trưởng Ban Biên tập",
+    full: "Bậc 02.02 — Phó Trưởng Ban Biên tập",
+  },
+  TEAM_LEAD: {
+    code: "Bậc 03.01",
+    name: "Tổ trưởng Tổ chuyên môn",
+    full: "Bậc 03.01 — Tổ trưởng Tổ chuyên môn",
+  },
+  TEAM_DEPUTY: {
+    code: "Bậc 03.02",
+    name: "Tổ phó Tổ chuyên môn",
+    full: "Bậc 03.02 — Tổ phó Tổ chuyên môn",
+  },
+  MEMBER: {
+    code: "Bậc 04",
+    name: "Thành viên",
+    full: "Bậc 04 — Thành viên",
+  },
+  COLLABORATOR: {
+    code: "Bậc 05",
+    name: "Cộng tác viên",
+    full: "Bậc 05 — Cộng tác viên",
+  },
+  OBSERVER: {
+    code: "Bậc 06",
+    name: "Ngoại lệ (Chuyên viên TW Đoàn)",
+    full: "Bậc 06 — Ngoại lệ (Chuyên viên Trung ương Đoàn)",
+  },
+};
+
+export const ROLE_SORT_ORDER: Record<MemberRole, number> = {
+  HEAD: 1,
+  ACTING_HEAD: 2,
+  DEPUTY_INSPECTOR: 3,
+  DEPUTY: 4,
+  TEAM_LEAD: 5,
+  TEAM_DEPUTY: 6,
+  MEMBER: 7,
+  COLLABORATOR: 8,
+  OBSERVER: 9,
 };
 
 export const TEAM_TITLE_LABELS: Record<TeamTitle, string> = {
@@ -71,6 +141,32 @@ export const IMPORTANCE_LABELS: Record<ImportanceLevel, string> = {
   KEY: "Trọng tâm",
   NORMAL: "Thông thường",
 };
+
+export const CONFIDENTIALITY_LABELS: Record<ConfidentialityLevel, { label: string; hint: string }> = {
+  NORMAL: {
+    label: "Thông thường",
+    hint: "Nhiệm vụ truyền thông, sản xuất nội dung thông thường.",
+  },
+  CONFIDENTIAL: {
+    label: "Mật",
+    hint: "VD: Tuyển nhân sự Ban Biên tập; ghi nhận dư luận xã hội trên không gian mạng về một trường hợp cụ thể...",
+  },
+  TOP_SECRET: {
+    label: "Tuyệt mật",
+    hint: "VD: Đấu tranh bảo vệ nền tảng tư tưởng của Đảng; ghi nhận dư luận xã hội về cán bộ Đoàn khu vực Trường học...",
+  },
+};
+
+export const DIRECTIVE_AUTHORITIES = [
+  "Ban Bí thư Trung ương Đoàn",
+  "Ban Thường vụ Trung ương Đoàn",
+  "Bí thư thứ nhất Trung ương Đoàn",
+  "Bí thư thường trực Trung ương Đoàn",
+  "Ủy viên Ban Thường vụ Trung ương Đoàn phụ trách",
+  "Phó Trưởng Ban Công tác Thanh thiếu nhi phụ trách chính",
+  "Phó Trưởng Ban Công tác Đoàn",
+  "Chuyên viên Trung ương Đoàn phụ trách chính",
+] as const;
 
 export const COMPLETION_MODE_LABELS: Record<CompletionMode, string> = {
   TASKS_ONLY: "Hoàn thành khi đủ tất cả task",
@@ -120,6 +216,36 @@ export const APPROVAL_STATUS_LABELS: Record<ApprovalStatus, string> = {
   STALE: "Cần lập lại (danh sách cử tri đổi)",
 };
 
+export const COUNCIL_STATUS_LABELS: Record<CouncilItemStatus, string> = {
+  OPEN_FOR_OPINION: "Đang lấy ý kiến (5 ngày)",
+  RED_ALERT: "Cảnh báo đỏ (< 2/3 ý kiến)",
+  AWAITING_MEETING: "Chờ cuộc họp Ban điều hành",
+  COMPLETED: "Đã kết luận & lưu trữ",
+};
+
+export const COUNCIL_OPINION_CHOICE_LABELS: Record<CouncilOpinionChoice, string> = {
+  AGREE: "Đồng thuận đề xuất, kiến nghị của Bậc 02.01",
+  DISAGREE: "Không đồng thuận đề xuất, kiến nghị của Bậc 02.01",
+  OTHER: "Ý kiến khác",
+  COMMENT: "Ý kiến góp ý tài liệu",
+};
+
+export const INITIATIVE_KIND_LABELS: Record<InitiativeKind, string> = {
+  IDEA: "Ý tưởng mới",
+  INITIATIVE: "Sáng kiến cải tiến",
+  PRODUCT: "Sản phẩm chủ động",
+};
+
+export const GRAPHIC_CATEGORY_LABELS: Record<GraphicCategory, string> = {
+  LOGO: "Logo & Biểu trưng",
+  FRAME: "Khung ảnh / Avatar",
+  TEMPLATE: "Template Canva / Slide",
+  BRAND_GUIDELINE: "Bộ nhận diện thương hiệu",
+  FONT: "Bộ Font chữ chuẩn",
+  ICON: "Icon / Vector / Minh họa",
+  OTHER: "Tài nguyên đồ họa khác",
+};
+
 /**
  * Mức độ khẩn cấp chuẩn hóa theo mục 7.4:
  * - Hỏa tốc: <= 3 giờ (bao gồm < 1 giờ)
@@ -152,6 +278,7 @@ export const DEFAULT_SLA_MINUTES: Record<UrgencyLevel, number> = {
 };
 
 export const WEIGHT_OPTIONS = [1, 2, 3, 5, 8] as const;
+export const MAX_REVISION_RETURNS = 2;
 
 export const SEED_TEAMS = [
   { code: "NOI_DUNG", name: "Tổ Xây dựng Nội dung", sort_order: 1 },

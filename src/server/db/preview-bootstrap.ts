@@ -66,13 +66,18 @@ export async function bootstrapPreviewPglite(db: PGlite): Promise<void> {
   const demoMembers = [
     { code: "BBT-001", extId: "1001", username: "truongban.bbt", name: "Nguyễn Minh Quân", role: "HEAD", primaryTeam: "NOI_DUNG", teamTitle: "MEMBER", org: "Trung ương Đoàn TNCS Hồ Chí Minh", email: "quan.bbt@demo.local", joinedOn: "2024-01-10" },
     { code: "BBT-002", extId: "1002", username: "quyentruongban.bbt", name: "Trần Thảo Vy", role: "ACTING_HEAD", primaryTeam: "NOI_DUNG", teamTitle: "MEMBER", org: "Học viện Báo chí và Tuyên truyền", email: "vy.bbt@demo.local", joinedOn: "2024-03-15" },
+    { code: "BBT-010", extId: "1010", username: "phoban.thamtra", name: "Lý Bảo Khánh", role: "DEPUTY_INSPECTOR", primaryTeam: "THAM_TRA", teamTitle: "LEADER", org: "Ban Biên tập Thanh niên Trường học", email: "khanh.thamtra@demo.local", joinedOn: "2024-01-20" },
     { code: "BBT-003", extId: "1003", username: "phoban.bbt", name: "Lê Hoàng Nam", role: "DEPUTY", primaryTeam: "MEDIA", teamTitle: "MEMBER", org: "ĐH Khoa học Xã hội & Nhân văn", email: "nam.bbt@demo.local", joinedOn: "2024-02-01" },
     { code: "BBT-004", extId: "1004", username: "truongto.noidung", name: "Phạm Lan Anh", role: "TEAM_LEAD", primaryTeam: "NOI_DUNG", teamTitle: "LEADER", org: "ĐH Ngoại thương", email: "lananh.bbt@demo.local", joinedOn: "2024-05-01" },
     { code: "BBT-005", extId: "1005", username: "truongto.media", name: "Đỗ Gia Huy", role: "TEAM_LEAD", primaryTeam: "MEDIA", teamTitle: "LEADER", org: "ĐH FPT", email: "giahuy.bbt@demo.local", joinedOn: "2024-05-10" },
     { code: "BBT-006", extId: "1006", username: "truongto.kythuat", name: "Vũ Đức Anh", role: "TEAM_LEAD", primaryTeam: "KY_THUAT", teamTitle: "LEADER", org: "ĐH Bách khoa Hà Nội", email: "ducanh.bbt@demo.local", joinedOn: "2024-06-01" },
+    { code: "BBT-011", extId: "1011", username: "photo.noidung", name: "Nguyễn Hà Trang", role: "TEAM_DEPUTY", primaryTeam: "NOI_DUNG", teamTitle: "DEPUTY_LEADER", org: "ĐH Kinh tế Quốc dân", email: "hatrang.bbt@demo.local", joinedOn: "2024-07-01" },
     { code: "BBT-007", extId: "1007", username: "mem.noidung1", name: "Bùi Khánh Linh", role: "MEMBER", primaryTeam: "NOI_DUNG", secondaryTeams: ["PHONG_VIEN"], teamTitle: "MEMBER", org: "THPT Chu Văn An", email: "khanhlinh.bbt@demo.local", joinedOn: "2025-01-12" },
     { code: "BBT-008", extId: "1008", username: "mem.media1", name: "Ngô Quang Minh", role: "MEMBER", primaryTeam: "MEDIA", secondaryTeams: ["KY_THUAT"], teamTitle: "MEMBER", org: "ĐH Kiến trúc Hà Nội", email: "quangminh.bbt@demo.local", joinedOn: "2025-02-18" },
     { code: "BBT-009", extId: "1009", username: "mem.ct35", name: "Đặng Thu Hà", role: "MEMBER", primaryTeam: "CONG_TAC_35", teamTitle: "MEMBER", org: "Học viện Ngoại giao", email: "thuha.bbt@demo.local", joinedOn: "2025-03-01" },
+    { code: "BBT-012", extId: "1012", username: "mem.thamtra1", name: "Trịnh Minh Khôi", role: "MEMBER", primaryTeam: "THAM_TRA", teamTitle: "MEMBER", org: "ĐH Luật Hà Nội", email: "minhkhoi.bbt@demo.local", joinedOn: "2025-03-15" },
+    { code: "BBT-013", extId: "1013", username: "ctv.media1", name: "Phan Gia Bảo", role: "COLLABORATOR", primaryTeam: "MEDIA", teamTitle: "MEMBER", org: "Cộng tác viên thiết kế", email: "giabao.ctv@demo.local", joinedOn: "2025-09-01" },
+    { code: "BBT-014", extId: "1014", username: "chuyenvien.twdoan", name: "Đ/c Nguyễn Thanh Tùng (TW Đoàn)", role: "OBSERVER", primaryTeam: "NOI_DUNG", teamTitle: "MEMBER", org: "Ban Công tác Thanh thiếu nhi TW Đoàn", email: "tung.twdoan@demo.local", joinedOn: "2024-01-01" },
   ];
 
   const memberByUser: Record<string, string> = {};

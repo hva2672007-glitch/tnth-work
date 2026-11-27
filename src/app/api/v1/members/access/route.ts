@@ -8,7 +8,16 @@ export const runtime = "nodejs";
 
 const GrantAccessSchema = z.object({
   externalAccountId: z.string().min(1),
-  role: z.enum(["ACTING_HEAD", "DEPUTY", "TEAM_LEAD", "MEMBER"]),
+  role: z.enum([
+    "ACTING_HEAD",
+    "DEPUTY_INSPECTOR",
+    "DEPUTY",
+    "TEAM_LEAD",
+    "TEAM_DEPUTY",
+    "MEMBER",
+    "COLLABORATOR",
+    "OBSERVER",
+  ]),
   primaryTeamId: z.string().uuid(),
   primaryTeamTitle: z.enum(["MEMBER", "LEADER", "DEPUTY_LEADER"]).optional(),
   secondaryTeamIds: z.array(z.string().uuid()).optional(),

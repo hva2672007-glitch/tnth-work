@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   AlertOctagon,
   AlertTriangle,
@@ -12,6 +13,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api-client";
+import { useAuth } from "@/components/app-shell";
 import { StatusBadge, UrgencyBadge } from "@/components/badges";
 import { formatVnDateTime } from "@/lib/date";
 import type { UrgencyLevel } from "@/lib/constants";
@@ -76,6 +78,8 @@ interface TeamOption {
 }
 
 export default function DashboardPage() {
+  const router = useRouter();
+  const { actor } = useAuth();
   const [mode, setMode] = useState<"missions" | "tasks">("missions");
   const [allTime, setAllTime] = useState(true);
   const [periodKey, setPeriodKey] = useState(() => {
@@ -87,6 +91,12 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (actor?.role === "OBSERVER") {
+      router.replace("/missions");
+    }
+  }, [actor?.role, router]);
 
   const load = useCallback(async () => {
     setError(null);

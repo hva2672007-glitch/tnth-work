@@ -2,7 +2,13 @@ import { query, queryOne, withTransaction } from "@/server/db";
 import type { AuthActor } from "@/server/auth/session";
 import { revokeAllSessionsForMember } from "@/server/auth/session";
 import { hashPassword, verifyPassword } from "@/server/auth/password";
-import { can, isBoardLeadership, isManagerRole, requirePermission } from "@/server/authorization/policy";
+import {
+  can,
+  canChangeMemberRole,
+  isBoardLeadership,
+  isManagerRole,
+  requirePermission,
+} from "@/server/authorization/policy";
 import { getPortalProvider } from "@/server/auth/portal-adapter";
 import { writeAudit } from "@/server/audit/service";
 import { createNotification } from "@/server/notifications/service";
@@ -40,6 +46,7 @@ export interface MemberDirectoryItem {
   canViewDetail: boolean;
   canEdit: boolean;
   canRevoke: boolean;
+  allowedRoleChanges: MemberRole[];
   workload?: MemberWorkloadBadge | null;
 }
 
@@ -144,9 +151,13 @@ export async function listMembersDirectory(
        CASE m.role
          WHEN 'HEAD' THEN 1
          WHEN 'ACTING_HEAD' THEN 2
-         WHEN 'DEPUTY' THEN 3
-         WHEN 'TEAM_LEAD' THEN 4
-         ELSE 5
+         WHEN 'DEPUTY_INSPECTOR' THEN 3
+         WHEN 'DEPUTY' THEN 4
+         WHEN 'TEAM_LEAD' THEN 5
+         WHEN 'TEAM_DEPUTY' THEN 6
+         WHEN 'MEMBER' THEN 7
+         WHEN 'COLLABORATOR' THEN 8
+         ELSE 9
        END,
        m.display_name ASC`,
     params,
@@ -249,6 +260,19 @@ export async function listMembersDirectory(
     const primary = mTeams.find((t) => t.isPrimary) ?? null;
 
     const resource = { targetMemberId: m.id, targetRole: m.role, targetTeamIds: teamIds };
+    const candidateRoles: MemberRole[] = [
+      "ACTING_HEAD",
+      "DEPUTY_INSPECTOR",
+      "DEPUTY",
+      "TEAM_LEAD",
+      "TEAM_DEPUTY",
+      "MEMBER",
+      "COLLABORATOR",
+      "OBSERVER",
+    ];
+    const allowedRoleChanges = candidateRoles.filter((nr) =>
+      canChangeMemberRole(actor, { targetMemberId: m.id, targetRole: m.role, targetTeamIds: teamIds }, nr),
+    );
     const canSeeWorkload =
       Boolean(filters?.includeWorkload) &&
       isManagerRole(actor.role) &&
@@ -272,6 +296,7 @@ export async function listMembersDirectory(
       canViewDetail: can(actor, "member.profile.view", resource),
       canEdit: can(actor, "member.profile.edit", resource),
       canRevoke: can(actor, "member.access.revoke", resource),
+      allowedRoleChanges,
       ...(filters?.includeWorkload ? { workload: canSeeWorkload ? (workloadMap.get(m.id) ?? null) : null } : {}),
     };
   });
@@ -467,6 +492,18 @@ export async function getMembersWorkload(
   return { summary, members: items };
 }
 
+function toIsoDateOnly(val: unknown): string | null {
+  if (!val) return null;
+  if (val instanceof Date) {
+    return Number.isNaN(val.getTime()) ? null : val.toISOString().slice(0, 10);
+  }
+  const s = String(val).trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const parsed = new Date(s);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+}
+
 export async function getMemberDetail(actor: AuthActor, targetMemberId: string) {
   const member = await queryOne<{
     id: string;
@@ -522,6 +559,12 @@ export async function getMemberDetail(actor: AuthActor, targetMemberId: string) 
     phone: string;
     social_links: unknown;
     current_org: string;
+    is_union_member: boolean;
+    union_joined_on: string | null;
+    is_party_member: boolean;
+    party_probationary_on: string | null;
+    party_official_on: string | null;
+    youth_union_position: string;
     education: unknown;
     academic_achievements: string;
     youth_achievements: string;
@@ -589,17 +632,23 @@ export async function getMemberDetail(actor: AuthActor, targetMemberId: string) 
       ? {
           fullName: profile.full_name,
           avatarFileId: profile.avatar_file_id,
-          dob: profile.dob ? String(profile.dob).slice(0, 10) : "",
+          dob: toIsoDateOnly(profile.dob) ?? "",
           birthplace: profile.birthplace,
           hometown: profile.hometown,
           email: profile.email,
           phone: profile.phone,
           socialLinks: Array.isArray(profile.social_links) ? profile.social_links : [],
           currentOrg: profile.current_org,
+          isUnionMember: Boolean(profile.is_union_member),
+          unionJoinedOn: toIsoDateOnly(profile.union_joined_on) ?? "",
+          isPartyMember: Boolean(profile.is_party_member),
+          partyProbationaryOn: toIsoDateOnly(profile.party_probationary_on) ?? "",
+          partyOfficialOn: toIsoDateOnly(profile.party_official_on) ?? "",
+          youthUnionPosition: profile.youth_union_position ?? "",
           education: Array.isArray(profile.education) ? profile.education : [],
           academicAchievements: profile.academic_achievements,
           youthAchievements: profile.youth_achievements,
-          joinedOn: profile.joined_on ? String(profile.joined_on).slice(0, 10) : "",
+          joinedOn: toIsoDateOnly(profile.joined_on) ?? "",
           profileCompleteAt: profile.profile_complete_at ? new Date(profile.profile_complete_at).toISOString() : null,
           updatedAt: new Date(profile.updated_at).toISOString(),
         }
@@ -645,8 +694,13 @@ export async function grantMemberAccess(
     actor,
     "member.access.grant",
     { grantRole: input.role },
-    "Chỉ Trưởng Ban Biên tập (01.01) được cấp quyền truy cập từ Bậc 01.02 trở xuống.",
+    actor.role === "TEAM_DEPUTY"
+      ? "Tổ phó Tổ chuyên môn (03.02) chỉ được cấp tài khoản cho Bậc 05 (Cộng tác viên) thuộc tổ mình."
+      : "Chỉ Trưởng Ban Biên tập (01.01) được cấp quyền truy cập từ Bậc 01.02 trở xuống.",
   );
+  if (actor.role === "TEAM_DEPUTY" && !actor.leadTeamIds.includes(input.primaryTeamId)) {
+    throw new AppError(403, "FORBIDDEN", "Tổ phó (03.02) chỉ được cấp tài khoản Bậc 05 vào tổ mình phụ trách.");
+  }
 
   const portal = getPortalProvider();
   const identity = await portal.getAccountStatus(input.externalAccountId);
@@ -674,7 +728,11 @@ export async function grantMemberAccess(
 
     let memberId: string;
     const teamTitle: TeamTitle =
-      input.role === "TEAM_LEAD" ? input.primaryTeamTitle ?? "LEADER" : "MEMBER";
+      input.role === "TEAM_LEAD" || input.role === "DEPUTY_INSPECTOR"
+        ? "LEADER"
+        : input.role === "TEAM_DEPUTY"
+          ? "DEPUTY_LEADER"
+          : "MEMBER";
 
     if (existing.rows[0]) {
       memberId = existing.rows[0].id;
@@ -789,8 +847,13 @@ export async function createLocalMember(
     actor,
     "member.access.grant",
     { grantRole: input.role },
-    "Chỉ Trưởng Ban Biên tập (01.01) được tạo tài khoản nội bộ từ Bậc 01.02 trở xuống.",
+    actor.role === "TEAM_DEPUTY"
+      ? "Tổ phó Tổ chuyên môn (03.02) chỉ được tạo tài khoản Bậc 05 (Cộng tác viên) thuộc tổ mình."
+      : "Chỉ Trưởng Ban Biên tập (01.01) được tạo tài khoản nội bộ từ Bậc 01.02 trở xuống.",
   );
+  if (actor.role === "TEAM_DEPUTY" && !actor.leadTeamIds.includes(input.primaryTeamId)) {
+    throw new AppError(403, "FORBIDDEN", "Tổ phó (03.02) chỉ được tạo tài khoản Bậc 05 vào tổ mình phụ trách.");
+  }
 
   const normalizedUsername = input.username.trim().toLowerCase();
   if (!/^[a-z0-9._-]{4,40}$/.test(normalizedUsername)) {
@@ -838,7 +901,11 @@ export async function createLocalMember(
     const memberCode = `BBT-${String(maxSeq + 1).padStart(3, "0")}`;
     const externalId = `local:${normalizedUsername}`;
     const teamTitle: TeamTitle =
-      input.role === "TEAM_LEAD" ? input.primaryTeamTitle ?? "LEADER" : "MEMBER";
+      input.role === "TEAM_LEAD" || input.role === "DEPUTY_INSPECTOR"
+        ? "LEADER"
+        : input.role === "TEAM_DEPUTY"
+          ? "DEPUTY_LEADER"
+          : "MEMBER";
 
     const inserted = await tx.query<{ id: string }>(
       `INSERT INTO members (
@@ -1006,6 +1073,111 @@ export async function changeOwnLocalPassword(
   return { ok: true };
 }
 
+/**
+ * Thay đổi cấp bậc thành viên theo thẩm quyền mới:
+ * - Bậc 01.01: hạ cấp 02 → 03/04, hạ 03 → 04, nâng 05 → 04
+ * - Bậc 02.01: hạ cấp 03 → 04, nâng 05 → 04
+ * - Bậc 02.02: nâng 05 → 04
+ * - Bậc 03.01: nâng 05 → 04 trong tổ mình quản lý
+ */
+export async function changeMemberRole(
+  actor: AuthActor,
+  targetMemberId: string,
+  newRole: MemberRole,
+  reason: string,
+  requestId?: string,
+) {
+  const cleanReason = reason.trim();
+  if (cleanReason.length < 3) {
+    throw new AppError(400, "REASON_REQUIRED", "Vui lòng nhập lý do thay đổi cấp bậc.");
+  }
+
+  return withTransaction(async (tx) => {
+    const tRes = await tx.query<{ id: string; display_name: string; role: MemberRole }>(
+      `SELECT id, display_name, role FROM members WHERE id = $1 AND archived_at IS NULL`,
+      [targetMemberId],
+    );
+    const target = tRes.rows[0];
+    if (!target) throw new AppError(404, "MEMBER_NOT_FOUND", "Không tìm thấy thành viên.");
+
+    const tmRows = await tx.query<{ team_id: string }>(
+      `SELECT team_id FROM team_memberships WHERE member_id = $1 AND effective_to IS NULL`,
+      [targetMemberId],
+    );
+    const targetTeamIds = tmRows.rows.map((r) => r.team_id);
+
+    requirePermission(
+      actor,
+      "member.role.change",
+      {
+        targetMemberId,
+        targetRole: target.role,
+        targetTeamIds,
+        newRole,
+      },
+      "Bạn không có thẩm quyền chuyển đổi cấp bậc cho thành viên này.",
+    );
+
+    await tx.query(
+      `UPDATE members SET role = $1, role_version = role_version + 1, updated_at = now() WHERE id = $2`,
+      [newRole, targetMemberId],
+    );
+
+    // Cập nhật chức danh tại tổ chính tương ứng với cấp bậc mới
+    const newTeamTitle: TeamTitle =
+      newRole === "TEAM_LEAD" || newRole === "DEPUTY_INSPECTOR"
+        ? "LEADER"
+        : newRole === "TEAM_DEPUTY"
+          ? "DEPUTY_LEADER"
+          : "MEMBER";
+    await tx.query(
+      `UPDATE team_memberships
+       SET team_title = $1
+       WHERE member_id = $2 AND is_primary = true AND effective_to IS NULL`,
+      [newTeamTitle, targetMemberId],
+    );
+    if (newRole === "MEMBER" || newRole === "COLLABORATOR" || newRole === "OBSERVER") {
+      await tx.query(
+        `UPDATE team_memberships SET team_title = 'MEMBER' WHERE member_id = $1 AND effective_to IS NULL`,
+        [targetMemberId],
+      );
+    }
+
+    await tx.query(
+      `INSERT INTO member_role_history (member_id, old_role, new_role, reason, changed_by)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [targetMemberId, target.role, newRole, cleanReason, actor.memberId],
+    );
+
+    await createNotification(
+      {
+        recipientId: targetMemberId,
+        eventType: "MEMBER_ROLE_CHANGED",
+        targetType: "MEMBER",
+        targetId: targetMemberId,
+        title: "Cập nhật cấp bậc Ban Biên tập",
+        message: `${actor.displayName} đã chuyển cấp bậc của bạn từ ${target.role} sang ${newRole}. Lý do: ${cleanReason}`,
+        link: `/members/${targetMemberId}`,
+      },
+      tx,
+    );
+
+    await writeAudit(
+      {
+        actorId: actor.memberId,
+        action: "MEMBER_ROLE_CHANGED",
+        targetType: "MEMBER",
+        targetId: targetMemberId,
+        safeDiff: { oldRole: target.role, newRole, reason: cleanReason },
+        requestId,
+      },
+      tx,
+    );
+
+    return { memberId: targetMemberId, oldRole: target.role, newRole };
+  });
+}
+
 export async function updateMemberProfile(
   actor: AuthActor,
   targetMemberId: string,
@@ -1019,6 +1191,12 @@ export async function updateMemberProfile(
     phone?: string;
     socialLinks?: { platform: string; handle: string }[];
     currentOrg?: string;
+    isUnionMember?: boolean;
+    unionJoinedOn?: string | null;
+    isPartyMember?: boolean;
+    partyProbationaryOn?: string | null;
+    partyOfficialOn?: string | null;
+    youthUnionPosition?: string;
     education?: { period: string; school: string; major?: string }[];
     academicAchievements?: string;
     youthAchievements?: string;
@@ -1055,13 +1233,32 @@ export async function updateMemberProfile(
     const cur = current.rows[0] ?? {};
 
     const fullName = input.fullName?.trim() || String(cur.full_name ?? "");
-    const dob = input.dob !== undefined ? (input.dob || null) : (cur.dob ? String(cur.dob).slice(0, 10) : null);
+    const dob = input.dob !== undefined ? toIsoDateOnly(input.dob) : toIsoDateOnly(cur.dob);
     const birthplace = input.birthplace !== undefined ? input.birthplace.trim() : String(cur.birthplace ?? "");
     const hometown = input.hometown !== undefined ? input.hometown.trim() : String(cur.hometown ?? "");
     const email = input.email !== undefined ? input.email.trim() : String(cur.email ?? "");
     const phone = input.phone !== undefined ? input.phone.trim() : String(cur.phone ?? "");
     const socialLinks = input.socialLinks !== undefined ? input.socialLinks : (cur.social_links ?? []);
     const currentOrg = input.currentOrg !== undefined ? input.currentOrg.trim() : String(cur.current_org ?? "");
+    const isUnionMember = input.isUnionMember !== undefined ? Boolean(input.isUnionMember) : Boolean(cur.is_union_member);
+    const unionJoinedOn = !isUnionMember
+      ? null
+      : input.unionJoinedOn !== undefined
+        ? toIsoDateOnly(input.unionJoinedOn)
+        : toIsoDateOnly(cur.union_joined_on);
+    const isPartyMember = input.isPartyMember !== undefined ? Boolean(input.isPartyMember) : Boolean(cur.is_party_member);
+    const partyProbationaryOn = !isPartyMember
+      ? null
+      : input.partyProbationaryOn !== undefined
+        ? toIsoDateOnly(input.partyProbationaryOn)
+        : toIsoDateOnly(cur.party_probationary_on);
+    const partyOfficialOn = !isPartyMember
+      ? null
+      : input.partyOfficialOn !== undefined
+        ? toIsoDateOnly(input.partyOfficialOn)
+        : toIsoDateOnly(cur.party_official_on);
+    const youthUnionPosition =
+      input.youthUnionPosition !== undefined ? input.youthUnionPosition.trim() : String(cur.youth_union_position ?? "");
     const education = input.education !== undefined ? input.education : (cur.education ?? []);
     const academicAchievements =
       input.academicAchievements !== undefined
@@ -1072,9 +1269,7 @@ export async function updateMemberProfile(
         ? (input.youthAchievements.trim() || "Chưa có")
         : String(cur.youth_achievements ?? "Chưa có");
     const joinedOn =
-      input.joinedOn !== undefined
-        ? (input.joinedOn || null)
-        : (cur.joined_on ? String(cur.joined_on).slice(0, 10) : null);
+      input.joinedOn !== undefined ? toIsoDateOnly(input.joinedOn) : toIsoDateOnly(cur.joined_on);
     const avatarFileId = input.avatarFileId !== undefined ? input.avatarFileId : (cur.avatar_file_id as string | null ?? null);
 
     const isComplete = Boolean(fullName && dob && birthplace && hometown && (email || phone) && currentOrg && joinedOn);
@@ -1082,9 +1277,11 @@ export async function updateMemberProfile(
     await tx.query(
       `INSERT INTO member_profiles (
          member_id, full_name, avatar_file_id, dob, birthplace, hometown, email, phone,
-         social_links, current_org, education, academic_achievements, youth_achievements,
+         social_links, current_org, is_union_member, union_joined_on, is_party_member,
+         party_probationary_on, party_official_on, youth_union_position,
+         education, academic_achievements, youth_achievements,
          joined_on, profile_complete_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11::jsonb, $12, $13, $14, $15, now())
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, $19, $20, $21, now())
        ON CONFLICT (member_id) DO UPDATE SET
          full_name = EXCLUDED.full_name,
          avatar_file_id = EXCLUDED.avatar_file_id,
@@ -1095,6 +1292,12 @@ export async function updateMemberProfile(
          phone = EXCLUDED.phone,
          social_links = EXCLUDED.social_links,
          current_org = EXCLUDED.current_org,
+         is_union_member = EXCLUDED.is_union_member,
+         union_joined_on = EXCLUDED.union_joined_on,
+         is_party_member = EXCLUDED.is_party_member,
+         party_probationary_on = EXCLUDED.party_probationary_on,
+         party_official_on = EXCLUDED.party_official_on,
+         youth_union_position = EXCLUDED.youth_union_position,
          education = EXCLUDED.education,
          academic_achievements = EXCLUDED.academic_achievements,
          youth_achievements = EXCLUDED.youth_achievements,
@@ -1112,6 +1315,12 @@ export async function updateMemberProfile(
         phone,
         JSON.stringify(socialLinks),
         currentOrg,
+        isUnionMember,
+        unionJoinedOn,
+        isPartyMember,
+        partyProbationaryOn,
+        partyOfficialOn,
+        youthUnionPosition,
         JSON.stringify(education),
         academicAchievements,
         youthAchievements,
@@ -1214,8 +1423,8 @@ export async function updateMemberActivityStatus(
   reason: string,
   requestId?: string,
 ) {
-  if (actor.memberId === targetMemberId && actor.role === "MEMBER") {
-    throw new AppError(403, "FORBIDDEN", "Thành viên Bậc 04 không được tự sửa tình trạng hoạt động.");
+  if (actor.memberId === targetMemberId && (actor.role === "MEMBER" || actor.role === "COLLABORATOR")) {
+    throw new AppError(403, "FORBIDDEN", "Thành viên Bậc 04 và Cộng tác viên Bậc 05 không được tự sửa tình trạng hoạt động.");
   }
 
   const target = await queryOne<{ id: string; role: MemberRole; activity_status: ActivityStatus }>(

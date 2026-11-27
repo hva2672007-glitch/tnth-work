@@ -49,6 +49,12 @@ interface MemberDetailData {
     academicAchievements: string;
     youthAchievements: string;
     joinedOn: string;
+    isUnionMember?: boolean;
+    unionJoinedOn?: string;
+    isPartyMember?: boolean;
+    partyProbationaryOn?: string;
+    partyOfficialOn?: string;
+    youthUnionPosition?: string;
   } | null;
   roleHistory: { id: string; oldRole: string | null; newRole: string; reason: string; changedByName: string | null; createdAt: string }[];
   openAssignments: { id: string; taskTitle: string; missionId: string; missionCode: string; status: string; deadline: string }[];
@@ -77,6 +83,12 @@ export default function MemberDetailPage() {
   const [academicItems, setAcademicItems] = useState<string[]>([]);
   const [youthItems, setYouthItems] = useState<string[]>([]);
   const [joinedOn, setJoinedOn] = useState("");
+  const [isUnionMember, setIsUnionMember] = useState(false);
+  const [unionJoinedOn, setUnionJoinedOn] = useState("");
+  const [isPartyMember, setIsPartyMember] = useState(false);
+  const [partyProbationaryOn, setPartyProbationaryOn] = useState("");
+  const [partyOfficialOn, setPartyOfficialOn] = useState("");
+  const [youthUnionPosition, setYouthUnionPosition] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -96,6 +108,12 @@ export default function MemberDetailPage() {
         setAcademicItems(parseAchievementLines(res.profile.academicAchievements));
         setYouthItems(parseAchievementLines(res.profile.youthAchievements));
         setJoinedOn(res.profile.joinedOn);
+        setIsUnionMember(Boolean(res.profile.isUnionMember));
+        setUnionJoinedOn(res.profile.unionJoinedOn ?? "");
+        setIsPartyMember(Boolean(res.profile.isPartyMember));
+        setPartyProbationaryOn(res.profile.partyProbationaryOn ?? "");
+        setPartyOfficialOn(res.profile.partyOfficialOn ?? "");
+        setYouthUnionPosition(res.profile.youthUnionPosition ?? "");
       }
       setError(null);
     } catch (err) {
@@ -161,6 +179,12 @@ export default function MemberDetailPage() {
           academicAchievements: serializeAchievementLines(academicItems),
           youthAchievements: serializeAchievementLines(youthItems),
           joinedOn: joinedOn || null,
+          isUnionMember,
+          unionJoinedOn: isUnionMember ? (unionJoinedOn || null) : null,
+          isPartyMember,
+          partyProbationaryOn: isPartyMember ? (partyProbationaryOn || null) : null,
+          partyOfficialOn: isPartyMember ? (partyOfficialOn || null) : null,
+          youthUnionPosition,
         }),
       });
       setNotice("Đã lưu cập nhật hồ sơ thành viên.");
@@ -315,6 +339,83 @@ export default function MemberDetailPage() {
         <div>
           <label className="mb-1 block text-xs font-semibold text-slate-700">Ngày bắt đầu công tác tại Ban</label>
           <input disabled={!canEdit} type="date" value={joinedOn} onChange={(e) => setJoinedOn(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50" />
+        </div>
+
+        {/* Thông tin Đoàn viên, Đảng viên & Chức vụ Đoàn - Hội - Đội */}
+        <div className="border-t border-slate-100 pt-4 sm:col-span-2 grid gap-4 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <h3 className="text-xs font-bold uppercase tracking-wide text-blue-800">Thông tin Đoàn – Đảng &amp; Chức vụ Đoàn – Hội – Đội</h3>
+          </div>
+          <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50/50 p-3">
+            <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-800">
+              <input
+                disabled={!canEdit}
+                type="checkbox"
+                checked={isUnionMember}
+                onChange={(e) => setIsUnionMember(e.target.checked)}
+              />
+              Là Đoàn viên TNCS Hồ Chí Minh
+            </label>
+            {isUnionMember && (
+              <div>
+                <label className="mb-1 block text-xs text-slate-600">Ngày vào Đoàn</label>
+                <input
+                  disabled={!canEdit}
+                  type="date"
+                  value={unionJoinedOn}
+                  onChange={(e) => setUnionJoinedOn(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm disabled:bg-slate-50"
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50/50 p-3">
+            <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-800">
+              <input
+                disabled={!canEdit}
+                type="checkbox"
+                checked={isPartyMember}
+                onChange={(e) => setIsPartyMember(e.target.checked)}
+              />
+              Là Đảng viên Đảng Cộng sản Việt Nam
+            </label>
+            {isPartyMember && (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs text-slate-600">Ngày vào Đảng (dự bị)</label>
+                  <input
+                    disabled={!canEdit}
+                    type="date"
+                    value={partyProbationaryOn}
+                    onChange={(e) => setPartyProbationaryOn(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm disabled:bg-slate-50"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-slate-600">Ngày vào Đảng (chính thức)</label>
+                  <input
+                    disabled={!canEdit}
+                    type="date"
+                    value={partyOfficialOn}
+                    onChange={(e) => setPartyOfficialOn(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm disabled:bg-slate-50"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="sm:col-span-2">
+            <label className="mb-1 block text-xs font-semibold text-slate-700">Chức vụ Đoàn – Hội – Đội hiện nay</label>
+            <input
+              disabled={!canEdit}
+              value={youthUnionPosition}
+              onChange={(e) => setYouthUnionPosition(e.target.value)}
+              placeholder="VD: Ủy viên Ban Chấp hành Đoàn trường, Chủ tịch Hội Sinh viên trường..."
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50"
+            />
+          </div>
         </div>
 
         <div className="border-t border-slate-100 pt-4 sm:col-span-2">

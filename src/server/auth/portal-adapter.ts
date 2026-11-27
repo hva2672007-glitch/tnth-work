@@ -38,13 +38,18 @@ export interface PortalIdentityProvider {
 const MOCK_PORTAL_ACCOUNTS: PortalIdentity[] = [
   { provider: "tnth", externalAccountId: "1001", username: "truongban.bbt", displayName: "Nguyễn Minh Quân", email: "quan.bbt@demo.local", status: "ACTIVE" },
   { provider: "tnth", externalAccountId: "1002", username: "quyentruongban.bbt", displayName: "Trần Thảo Vy", email: "vy.bbt@demo.local", status: "ACTIVE" },
+  { provider: "tnth", externalAccountId: "1010", username: "phoban.thamtra", displayName: "Lý Bảo Khánh", email: "khanh.thamtra@demo.local", status: "ACTIVE" },
   { provider: "tnth", externalAccountId: "1003", username: "phoban.bbt", displayName: "Lê Hoàng Nam", email: "nam.bbt@demo.local", status: "ACTIVE" },
   { provider: "tnth", externalAccountId: "1004", username: "truongto.noidung", displayName: "Phạm Lan Anh", email: "lananh.bbt@demo.local", status: "ACTIVE" },
   { provider: "tnth", externalAccountId: "1005", username: "truongto.media", displayName: "Đỗ Gia Huy", email: "giahuy.bbt@demo.local", status: "ACTIVE" },
   { provider: "tnth", externalAccountId: "1006", username: "truongto.kythuat", displayName: "Vũ Đức Anh", email: "ducanh.bbt@demo.local", status: "ACTIVE" },
+  { provider: "tnth", externalAccountId: "1011", username: "photo.noidung", displayName: "Nguyễn Hà Trang", email: "hatrang.bbt@demo.local", status: "ACTIVE" },
   { provider: "tnth", externalAccountId: "1007", username: "mem.noidung1", displayName: "Bùi Khánh Linh", email: "khanhlinh.bbt@demo.local", status: "ACTIVE" },
   { provider: "tnth", externalAccountId: "1008", username: "mem.media1", displayName: "Ngô Quang Minh", email: "quangminh.bbt@demo.local", status: "ACTIVE" },
   { provider: "tnth", externalAccountId: "1009", username: "mem.ct35", displayName: "Đặng Thu Hà", email: "thuha.bbt@demo.local", status: "ACTIVE" },
+  { provider: "tnth", externalAccountId: "1012", username: "mem.thamtra1", displayName: "Trịnh Minh Khôi", email: "minhkhoi.bbt@demo.local", status: "ACTIVE" },
+  { provider: "tnth", externalAccountId: "1013", username: "ctv.media1", displayName: "Phan Gia Bảo", email: "giabao.ctv@demo.local", status: "ACTIVE" },
+  { provider: "tnth", externalAccountId: "1014", username: "chuyenvien.twdoan", displayName: "Đ/c Nguyễn Thanh Tùng (TW Đoàn)", email: "tung.twdoan@demo.local", status: "ACTIVE" },
   // Các tài khoản cổng thông tin CHƯA được cấp quyền vào Web Phân công (dùng để test tra cứu & cấp quyền / chặn truy cập)
   { provider: "tnth", externalAccountId: "2001", username: "ctv.moi1", displayName: "Hoàng Nhật Minh", email: "nhatminh@demo.local", status: "ACTIVE" },
   { provider: "tnth", externalAccountId: "2002", username: "ctv.moi2", displayName: "Nguyễn Ngọc Diệp", email: "ngocdiep@demo.local", status: "ACTIVE" },

@@ -32,6 +32,17 @@ interface KpiReportData {
     completionRate: number | null;
     ontimeRate: number | null;
     score: number | null;
+    lateCount?: number;
+    transferredCount?: number;
+    bonus?: {
+      conductReports: number;
+      councilSubmissions: number;
+      councilOpinions: number;
+      councilConclusions: number;
+      metricPoints: number;
+      initiativePoints: number;
+      totalBonusCompleted: number;
+    };
     counts: {
       total: number;
       completed: number;
@@ -284,9 +295,9 @@ function ReportsContent() {
                     <th>Tổ chính</th>
                     <th>Tổng KL</th>
                     <th>KL hoàn thành</th>
-                    <th>KL đúng/trước hạn</th>
+                    <th>Điểm cộng (HĐĐH/SK/SL)</th>
                     <th>Trước / Đúng / Trễ</th>
-                    <th>Chờ duyệt / Chưa nộp</th>
+                    <th>Số lần trễ / Chuyển giao</th>
                     <th>Tỷ lệ HT</th>
                     <th>Điểm KPI</th>
                   </tr>
@@ -301,14 +312,36 @@ function ReportsContent() {
                       <td className="text-xs text-slate-700">{m.primaryTeamName}</td>
                       <td className="font-semibold">{m.eligibleWeight}</td>
                       <td>{m.completedWeight}</td>
-                      <td>{m.ontimeWeight}</td>
+                      <td className="text-xs">
+                        {m.bonus && m.bonus.totalBonusCompleted > 0 ? (
+                          <div>
+                            <span className="font-bold text-emerald-700">+{m.bonus.totalBonusCompleted}</span>
+                            <div className="text-[10px] text-slate-500">
+                              {[
+                                m.bonus.conductReports > 0 ? `Thái độ: ${m.bonus.conductReports}` : "",
+                                m.bonus.councilSubmissions + m.bonus.councilOpinions + m.bonus.councilConclusions > 0
+                                  ? `HĐĐH: ${m.bonus.councilSubmissions + m.bonus.councilOpinions + m.bonus.councilConclusions}`
+                                  : "",
+                                m.bonus.initiativePoints > 0 ? `SK: ${m.bonus.initiativePoints}` : "",
+                                m.bonus.metricPoints > 0 ? `SL: ${m.bonus.metricPoints}` : "",
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-slate-400">0</span>
+                        )}
+                      </td>
                       <td className="whitespace-nowrap text-xs">
                         <span className="text-emerald-700">{m.counts.early}</span> /{" "}
                         <span className="text-blue-700">{m.counts.onTime}</span> /{" "}
                         <span className="text-red-700">{m.counts.lateCompleted}</span>
                       </td>
                       <td className="whitespace-nowrap text-xs">
-                        {m.counts.pendingReview} / {m.counts.unsubmitted}
+                        <span className={m.lateCount ? "font-bold text-red-700" : "text-slate-500"}>{m.lateCount ?? 0} trễ</span>
+                        {" · "}
+                        <span className={m.transferredCount ? "font-semibold text-amber-800" : "text-slate-500"}>{m.transferredCount ?? 0} CG</span>
                       </td>
                       <td className="text-xs font-medium">
                         {m.completionRate !== null ? `${m.completionRate}%` : "N/A"}

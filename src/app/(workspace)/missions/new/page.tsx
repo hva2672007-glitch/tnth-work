@@ -19,10 +19,13 @@ import { useAuth } from "@/components/app-shell";
 import { WorkloadBadge, type WorkloadLevelUi } from "@/components/badges";
 import {
   COMPLETION_MODE_LABELS,
+  CONFIDENTIALITY_LABELS,
+  DIRECTIVE_AUTHORITIES,
   suggestUrgency,
   URGENCY_LABELS,
   WEIGHT_OPTIONS,
   type CompletionMode,
+  type ConfidentialityLevel,
   type ImportanceLevel,
   type SubmissionMode,
   type UrgencyLevel,
@@ -89,6 +92,8 @@ export default function NewMissionPage() {
   const [expectedOutcome, setExpectedOutcome] = useState("");
   const [ownerId, setOwnerId] = useState("");
   const [importance, setImportance] = useState<ImportanceLevel>("NORMAL");
+  const [confidentiality, setConfidentiality] = useState<ConfidentialityLevel>("NORMAL");
+  const [directiveAuthorities, setDirectiveAuthorities] = useState<string[]>([]);
   const [urgencyOverride, setUrgencyOverride] = useState<UrgencyLevel | "">("");
   const [urgencyOverrideReason, setUrgencyOverrideReason] = useState("");
   const [refs, setRefs] = useState<Array<{ label: string; url: string }>>([]);
@@ -133,10 +138,10 @@ export default function NewMissionPage() {
         setGroups(g);
         setTeams(t);
         setChannels(c);
-        setMembers(m);
+        setMembers(m.filter((x) => x.role !== "OBSERVER"));
         if (g[0]) setGroupId((prev) => prev || g[0].id);
         const preferredTeamId =
-          actor?.role === "TEAM_LEAD" && actor.leadTeamIds[0]
+          (actor?.role === "TEAM_LEAD" || actor?.role === "TEAM_DEPUTY") && actor.leadTeamIds[0]
             ? actor.leadTeamIds[0]
             : t[0]?.id ?? "";
         if (preferredTeamId) {
@@ -163,7 +168,7 @@ export default function NewMissionPage() {
   const otherChannel = useMemo(() => channels.find((c) => c.allowCustomName), [channels]);
 
   const availableTeams = useMemo(() => {
-    if (actor?.role === "TEAM_LEAD" && actor.leadTeamIds.length > 0) {
+    if ((actor?.role === "TEAM_LEAD" || actor?.role === "TEAM_DEPUTY") && actor.leadTeamIds.length > 0) {
       return teams.filter((t) => actor.leadTeamIds.includes(t.id));
     }
     return teams;
@@ -293,13 +298,13 @@ export default function NewMissionPage() {
     );
 
   const getVisibleAssignees = (task: TaskDraft) => {
-    let list = members;
-    if (actor?.role === "TEAM_LEAD") {
-      // Bậc 03 giao cho thành viên tổ mình lãnh đạo, bản thân hoặc ngoại lệ Bậc 01/02
+    let list = members.filter((m) => m.role !== "OBSERVER");
+    if (actor?.role === "TEAM_LEAD" || actor?.role === "TEAM_DEPUTY") {
+      // Bậc 03.01 / 03.02 giao cho thành viên/CTV tổ mình lãnh đạo, bản thân hoặc ngoại lệ Bậc 01/02
       list = list.filter(
         (m) =>
           m.id === actor.memberId ||
-          ["HEAD", "ACTING_HEAD", "DEPUTY"].includes(m.role) ||
+          ["HEAD", "ACTING_HEAD", "DEPUTY_INSPECTOR", "DEPUTY"].includes(m.role) ||
           (m.teams ?? []).some((tm) => actor.leadTeamIds.includes(tm.id)),
       );
     }
@@ -350,6 +355,8 @@ export default function NewMissionPage() {
         expectedOutcome,
         ownerId: effectiveOwnerId,
         importance,
+        confidentiality,
+        directiveAuthorities,
         urgency: effectiveUrgency,
         urgencyOverrideReason: urgencyOverride && urgencyOverride !== suggestedUrgency ? urgencyOverrideReason : undefined,
         deadline: deadlineIso,
@@ -391,7 +398,7 @@ export default function NewMissionPage() {
     }
   };
 
-  const isBoard = actor && ["HEAD", "ACTING_HEAD", "DEPUTY"].includes(actor.role);
+  const isBoard = actor && ["HEAD", "ACTING_HEAD", "DEPUTY_INSPECTOR", "DEPUTY"].includes(actor.role);
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -560,6 +567,45 @@ export default function NewMissionPage() {
           </div>
         </div>
 
+        {/* Mức độ mật & Nhiệm vụ thuộc sự chỉ đạo của (V2) */}
+        <div className="grid gap-4 border-t border-slate-100 pt-4 sm:grid-cols-3">
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-700">Mức độ mật của nhiệm vụ</label>
+            <select
+              value={confidentiality}
+              onChange={(e) => setConfidentiality(e.target.value as ConfidentialityLevel)}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            >
+              <option value="NORMAL">Thông thường</option>
+              <option value="CONFIDENTIAL">Mật</option>
+              <option value="TOP_SECRET">Tuyệt mật</option>
+            </select>
+            <p className="mt-1 text-[11px] text-slate-500">{CONFIDENTIALITY_LABELS[confidentiality].hint}</p>
+          </div>
+          <div className="sm:col-span-2">
+            <label className="mb-1 block text-xs font-semibold text-slate-700">
+              Nhiệm vụ thuộc sự chỉ đạo của (tuỳ chọn, chọn nhiều)
+            </label>
+            <div className="grid gap-1.5 rounded-lg border border-slate-200 bg-slate-50/50 p-2.5 text-xs sm:grid-cols-2">
+              {DIRECTIVE_AUTHORITIES.map((auth) => (
+                <label key={auth} className="flex cursor-pointer items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={directiveAuthorities.includes(auth)}
+                    onChange={() =>
+                      setDirectiveAuthorities((prev) =>
+                        prev.includes(auth) ? prev.filter((x) => x !== auth) : [...prev, auth],
+                      )
+                    }
+                    className="mt-0.5"
+                  />
+                  <span className="text-slate-700">{auth}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+
         {/* Ref links */}
         <div className="border-t border-slate-100 pt-3">
           <div className="flex items-center justify-between">
@@ -706,7 +752,7 @@ export default function NewMissionPage() {
                     >
                       <option value="">Tự chọn Lãnh đạo tổ phụ trách</option>
                       {members
-                        .filter((m) => m.role !== "MEMBER")
+                        .filter((m) => !["MEMBER", "COLLABORATOR", "OBSERVER"].includes(m.role))
                         .map((m) => (
                           <option key={m.id} value={m.id}>
                             {m.displayName}

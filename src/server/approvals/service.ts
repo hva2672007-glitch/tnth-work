@@ -91,13 +91,13 @@ async function loadRegulationPolicyForRole(proposerRole: MemberRole): Promise<Po
       requireDistinctVotersAcrossGroups: true,
     };
   }
-  if (proposerRole === "DEPUTY") {
+  if (proposerRole === "DEPUTY" || proposerRole === "DEPUTY_INSPECTOR") {
     return {
       requiredGroups: { HEAD: cfg.regulation_deputy?.HEAD ?? "ANY_ONE" },
       requireDistinctVotersAcrossGroups: true,
     };
   }
-  throw new AppError(403, "FORBIDDEN", "Chỉ Trưởng Ban (01.01), Quyền Trưởng Ban (01.02) hoặc Phó Ban (02) được đề xuất sửa quy chế.");
+  throw new AppError(403, "FORBIDDEN", "Chỉ Trưởng Ban (01.01), Quyền Trưởng Ban (01.02) hoặc Phó Ban (02.01 / 02.02) được đề xuất sửa quy chế.");
 }
 
 async function snapshotEligibleVoters(
@@ -108,15 +108,19 @@ async function snapshotEligibleVoters(
 ) {
   const voters: { memberId: string; requiredGroup: "HEAD" | "DEPUTY" | "TEAM_LEAD" }[] = [];
   for (const group of groups) {
-    // Với nâng chức vụ 01.02 → 01.01: lấy TẤT CẢ tài khoản Bậc 03 giữ chức vụ hiệu lực (gồm cả tạm nghỉ theo mục 11.2)
+    // Với nâng chức vụ 01.02 → 01.01: lấy TẤT CẢ tài khoản Bậc 03.01 giữ chức vụ hiệu lực (gồm cả tạm nghỉ theo mục 11.2)
     const statusFilter =
       group === "TEAM_LEAD" && includeOnLeaveForTeamLead
         ? `activity_status IN ('ACTIVE', 'ON_LEAVE')`
         : `activity_status = 'ACTIVE'`;
+    const roleFilter =
+      group === "DEPUTY" ? `role IN ('DEPUTY_INSPECTOR', 'DEPUTY')` : `role = $1`;
+    const queryParams = group === "DEPUTY" ? [proposerId] : [group, proposerId];
+    const idParam = group === "DEPUTY" ? "$1" : "$2";
     const rows = await tx.query<{ id: string }>(
       `SELECT id FROM members
-       WHERE role = $1 AND access_enabled = true AND archived_at IS NULL AND ${statusFilter} AND id <> $2`,
-      [group, proposerId],
+       WHERE ${roleFilter} AND access_enabled = true AND archived_at IS NULL AND ${statusFilter} AND id <> ${idParam}`,
+      queryParams,
     );
     if (rows.rows.length === 0) {
       throw new AppError(

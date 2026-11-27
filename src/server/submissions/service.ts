@@ -1,12 +1,12 @@
 import { query, queryOne, withTransaction } from "@/server/db";
 import type { AuthActor } from "@/server/auth/session";
-import { can, requirePermission } from "@/server/authorization/policy";
+import { can, isBoardLeadership, isCouncilRole, requirePermission } from "@/server/authorization/policy";
 import { recomputeMissionStatus, recomputeTaskStatus } from "@/server/missions/workflow";
 import { writeActivity, writeAudit } from "@/server/audit/service";
 import { createNotifications } from "@/server/notifications/service";
 import { AppError } from "@/server/errors";
 import { classifyTimeliness } from "@/lib/date";
-import type { SubmissionMode } from "@/lib/constants";
+import { MAX_REVISION_RETURNS, type SubmissionMode } from "@/lib/constants";
 
 function validateHttpUrl(url: string): string {
   const trimmed = url.trim();
@@ -322,8 +322,8 @@ export async function reviewSubmissionVersion(
 
     await tx.query(`UPDATE submission_versions SET state = $1 WHERE id = $2`, [decision, versionId]);
 
-    const contribRows = await tx.query<{ assignment_id: string; member_id: string; original_deadline: Date }>(
-      `SELECT sc.assignment_id, ta.member_id, ta.original_deadline
+    const contribRows = await tx.query<{ assignment_id: string; member_id: string; original_deadline: Date; revision_count: number }>(
+      `SELECT sc.assignment_id, ta.member_id, ta.original_deadline, ta.revision_count
        FROM submission_contributors sc
        JOIN task_assignments ta ON ta.id = sc.assignment_id
        WHERE sc.submission_version_id = $1`,
@@ -336,6 +336,7 @@ export async function reviewSubmissionVersion(
         : new Set(contribRows.rows.map((c) => c.assignment_id));
 
     const notifiedMembers: string[] = [];
+    let exceededMaxReturns = false;
 
     for (const c of contribRows.rows) {
       notifiedMembers.push(c.member_id);
@@ -353,6 +354,7 @@ export async function reviewSubmissionVersion(
                  effective_submitted_at = $1,
                  reviewed_at = $2,
                  late_against_original_deadline = $3,
+                 needs_reassignment = false,
                  version = version + 1,
                  updated_at = now()
              WHERE id = $4`,
@@ -360,16 +362,55 @@ export async function reviewSubmissionVersion(
           );
         }
       } else {
+        // Quy tắc Bước 06 mới: tối đa 02 lần trả lại; sau 02 lần vẫn không đạt → đánh dấu cần quay lại Bước 01 phân công lại!
+        const nextRevCount = Number(c.revision_count ?? 0) + 1;
+        const needsReassign = nextRevCount >= MAX_REVISION_RETURNS;
+        if (needsReassign) exceededMaxReturns = true;
         await tx.query(
           `UPDATE task_assignments
-           SET status = 'REVISION_REQUIRED', reviewed_at = $1, version = version + 1, updated_at = now()
-           WHERE id = $2`,
-          [reviewedAtIso, c.assignment_id],
+           SET status = 'REVISION_REQUIRED',
+               revision_count = $1,
+               needs_reassignment = $2,
+               reviewed_at = $3,
+               version = version + 1,
+               updated_at = now()
+           WHERE id = $4`,
+          [nextRevCount, needsReassign, reviewedAtIso, c.assignment_id],
         );
       }
     }
 
     await recomputeTaskStatus(v.task_id, tx);
+
+    if (exceededMaxReturns) {
+      const managers = await tx.query<{ member_id: string }>(
+        `SELECT tm.member_id FROM team_memberships tm
+         JOIN members m ON m.id = tm.member_id
+         WHERE tm.team_id = $1 AND tm.effective_to IS NULL
+           AND tm.team_title IN ('LEADER', 'DEPUTY_LEADER')
+           AND m.access_enabled = true AND m.activity_status = 'ACTIVE'`,
+        [v.owner_team_id],
+      );
+      const missionOwner = await tx.query<{ owner_id: string }>(`SELECT owner_id FROM missions WHERE id = $1`, [v.mission_id]);
+      const alertRecipients = [
+        ...new Set([
+          ...managers.rows.map((r) => r.member_id),
+          ...(missionOwner.rows[0] ? [missionOwner.rows[0].owner_id] : []),
+        ]),
+      ];
+      await createNotifications(
+        alertRecipients,
+        {
+          eventType: "REVISION_LIMIT_REACHED",
+          targetType: "MISSION",
+          targetId: v.mission_id,
+          title: `Cảnh báo: ${v.task_code} đã trả lại ${MAX_REVISION_RETURNS} lần — cần phân công lại`,
+          message: `Sản phẩm task "${v.task_title}" đã bị trả lại ${MAX_REVISION_RETURNS} lần nhưng vẫn chưa đạt yêu cầu. Theo quy trình Bước 06, vui lòng xem xét quay lại Bước 01 để phân công/chuyển giao lại.`,
+          link: `/missions/${v.mission_id}`,
+        },
+        tx,
+      );
+    }
 
     await createNotifications(
       notifiedMembers,
@@ -668,16 +709,74 @@ export async function assertCanAccessFile(actor: AuthActor, fileId: string) {
   }>(`SELECT * FROM files WHERE id = $1 AND state = 'ACTIVE'`, [fileId]);
   if (!file) throw new AppError(404, "FILE_NOT_FOUND", "Không tìm thấy tệp.");
 
-  // Người upload luôn xem được file của mình
-  if (file.uploader_id === actor.memberId) return file;
+  // Bậc 06 (OBSERVER - Chuyên viên TW Đoàn): CHỈ được tải sản phẩm CUỐI CÙNG (APPROVED) của nhiệm vụ ĐÃ HOÀN THÀNH
+  if (actor.role === "OBSERVER") {
+    const okObs = await queryOne<{ id: string }>(
+      `SELECT m.id
+       FROM file_links fl
+       JOIN submission_versions sv ON sv.id = fl.submission_version_id AND sv.state = 'APPROVED'
+       JOIN submissions s ON s.id = sv.submission_id
+       JOIN tasks t ON t.id = s.task_id
+       JOIN missions m ON m.id = t.mission_id AND m.status = 'COMPLETED'
+       WHERE fl.file_id = $1
+       LIMIT 1`,
+      [fileId],
+    );
+    if (okObs) return file;
+    throw new AppError(403, "FILE_ACCESS_DENIED", "Tài khoản Bậc 06 chỉ được tải sản phẩm cuối cùng của nhiệm vụ đã hoàn thành.");
+  }
 
-  // Ảnh đại diện hoặc quy chế đã ban hành: mọi thành viên đã xác thực được xem
-  if (file.purpose === "AVATAR" || file.purpose === "REGULATION") {
+  // Người upload luôn xem được file của mình (ngoại trừ phiếu ghi nhận thái độ bị ẩn sau khi gửi đối với 02.02/03/04!)
+  if (file.uploader_id === actor.memberId && file.purpose !== "CONDUCT_EVIDENCE") {
     return file;
   }
 
-  // Ban lãnh đạo (01.01, 01.02, 02) có phạm vi toàn Ban
-  if (["HEAD", "ACTING_HEAD", "DEPUTY"].includes(actor.role)) {
+  // Ảnh đại diện, quy chế đã ban hành hoặc Kho Data đồ họa: mọi thành viên 01.01 - 05 được xem
+  if (file.purpose === "AVATAR" || file.purpose === "REGULATION" || file.purpose === "GRAPHIC_ASSET") {
+    return file;
+  }
+
+  // Tài liệu trình Hội đồng điều hành: chỉ Bậc 01.01 - 03.02
+  if (file.purpose === "COUNCIL_DOCUMENT") {
+    if (isCouncilRole(actor.role)) return file;
+    throw new AppError(403, "FILE_ACCESS_DENIED", "Chỉ thành viên Hội đồng điều hành (Bậc 01.01 – 03.02) được truy cập tài liệu này.");
+  }
+
+  // Minh chứng phiếu ghi nhận thái độ: 01.01/01.02/02.01 xem toàn bộ; 02.02/03.01/03.02 chỉ xem khi đã trình ra HĐĐH
+  if (file.purpose === "CONDUCT_EVIDENCE") {
+    if (can(actor, "conduct.view_all")) return file;
+    if (isCouncilRole(actor.role)) {
+      const inDossier = await queryOne<{ council_item_id: string }>(
+        `SELECT cir.council_item_id
+         FROM council_item_reports cir
+         JOIN conduct_reports cr ON cr.id = cir.conduct_report_id
+         WHERE cr.evidence_file_ids @> $1::jsonb
+         LIMIT 1`,
+        [JSON.stringify([fileId])],
+      );
+      if (inDossier) return file;
+    }
+    throw new AppError(403, "FILE_ACCESS_DENIED", "Bạn không có quyền xem minh chứng phiếu ghi nhận thái độ này.");
+  }
+
+  // File ý tưởng / sáng kiến chủ động: cấp duyệt 01.01 - 03.02 hoặc người tham gia
+  if (file.purpose === "INITIATIVE") {
+    if (isCouncilRole(actor.role)) return file;
+    const isPart = await queryOne<{ id: string }>(
+      `SELECT i.id
+       FROM initiatives i
+       LEFT JOIN initiative_participants ip ON ip.initiative_id = i.id AND ip.member_id = $2
+       WHERE i.file_ids @> $1::jsonb
+         AND (i.submitted_by = $2 OR i.lead_member_id = $2 OR ip.member_id IS NOT NULL)
+       LIMIT 1`,
+      [JSON.stringify([fileId]), actor.memberId],
+    );
+    if (isPart) return file;
+    throw new AppError(403, "FILE_ACCESS_DENIED", "Bạn không có quyền truy cập tệp sáng kiến này.");
+  }
+
+  // Ban lãnh đạo (01.01, 01.02, 02.01, 02.02) có phạm vi toàn Ban đối với tệp nhiệm vụ
+  if (isBoardLeadership(actor.role)) {
     return file;
   }
 

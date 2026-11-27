@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { can, canAssignToMember } from "@/server/authorization/policy";
+import { can, canAssignToMember, canChangeMemberRole } from "@/server/authorization/policy";
 import type { AuthActor } from "@/server/auth/session";
 import { suggestUrgency } from "@/lib/constants";
 import { classifyTimeliness, computeNextOccurrence } from "@/lib/date";
@@ -80,6 +80,47 @@ describe("Phân quyền 5 cấp bậc (ROLE-01 .. ROLE-05)", () => {
     expect(can(leadA, "task.review", { ownerTeamId: "team-a", taskSubmitterId: "leadA" })).toBe(false);
     expect(can(leadA, "task.review", { ownerTeamId: "team-a", taskSubmitterId: "memA" })).toBe(true);
     expect(can(memA, "task.review", { ownerTeamId: "team-a", taskSubmitterId: "leadA" })).toBe(false);
+  });
+
+  it("Phân quyền 9 cấp bậc V2: 02.01 Thẩm tra, 03.02 cấp Bậc 05, 04 Tổ Thẩm tra, 06 Ngoại lệ", () => {
+    const inspector = makeActor({ memberId: "insp", role: "DEPUTY_INSPECTOR" });
+    const teamDeputy = makeActor({ memberId: "tdA", role: "TEAM_DEPUTY", leadTeamIds: ["team-a"], teamIds: ["team-a"] });
+    const inspectorMem = makeActor({
+      memberId: "imem",
+      role: "MEMBER",
+      teamIds: ["team-tt"],
+      memberships: [{ teamId: "team-tt", teamCode: "THAM_TRA", teamName: "Tổ Thẩm tra – Giám sát", isPrimary: true, teamTitle: "MEMBER" }],
+    });
+    const collab = makeActor({ memberId: "ctvA", role: "COLLABORATOR", teamIds: ["team-a"] });
+    const observer = makeActor({ memberId: "obs", role: "OBSERVER", teamIds: [] });
+
+    // 03.02 chỉ được cấp quyền Bậc 05 (COLLABORATOR)
+    expect(can(teamDeputy, "member.access.grant", { grantRole: "COLLABORATOR" })).toBe(true);
+    expect(can(teamDeputy, "member.access.grant", { grantRole: "MEMBER" })).toBe(false);
+
+    // Quyền chuyển bậc (hạ cấp / nâng 05->04)
+    expect(canChangeMemberRole(leadA, { targetMemberId: "ctvA", targetRole: "COLLABORATOR", targetTeamIds: ["team-a"] }, "MEMBER")).toBe(true);
+    expect(canChangeMemberRole(leadA, { targetMemberId: "ctvB", targetRole: "COLLABORATOR", targetTeamIds: ["team-b"] }, "MEMBER")).toBe(false);
+    expect(canChangeMemberRole(inspector, { targetMemberId: "tdA", targetRole: "TEAM_DEPUTY", targetTeamIds: ["team-a"] }, "MEMBER")).toBe(true);
+    expect(canChangeMemberRole(deputy, { targetMemberId: "tdA", targetRole: "TEAM_DEPUTY", targetTeamIds: ["team-a"] }, "MEMBER")).toBe(false);
+
+    // Quyền Ghi nhận thái độ & Hội đồng điều hành
+    expect(can(inspector, "conduct.view_all")).toBe(true);
+    expect(can(inspector, "council.conclude")).toBe(true);
+    expect(can(deputy, "conduct.view_all")).toBe(false);
+    expect(can(deputy, "council.conclude")).toBe(false);
+    expect(can(inspectorMem, "conduct.create")).toBe(true);
+    expect(can(inspectorMem, "council.access")).toBe(false);
+    expect(can(memA, "conduct.create")).toBe(false);
+
+    // Bậc 06 (OBSERVER) chỉ được xem mission COMPLETED, cấm toàn bộ chức năng nội bộ
+    expect(can(observer, "mission.view", { missionStatus: "COMPLETED" })).toBe(true);
+    expect(can(observer, "mission.view", { missionStatus: "IN_PROGRESS" })).toBe(false);
+    expect(can(observer, "member.directory.view")).toBe(false);
+    expect(can(observer, "council.access")).toBe(false);
+    expect(can(observer, "graphics.view")).toBe(false);
+    expect(canAssignToMember(head, { memberId: "obs", role: "OBSERVER", teamIds: [] })).toBe(false);
+    expect(can(collab, "initiative.submit")).toBe(true);
   });
 });
 

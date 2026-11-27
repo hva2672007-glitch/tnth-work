@@ -10,8 +10,11 @@ import {
   Briefcase,
   CheckSquare,
   LayoutDashboard,
+  Lightbulb,
   LogOut,
   Menu,
+  Palette,
+  Scale,
   Settings,
   Users,
   X,
@@ -41,6 +44,7 @@ export interface SessionCapabilities {
   canManageGroups: boolean;
   canManageChannels: boolean;
   canGrantAccess: boolean;
+  canGrantCollaboratorOnly?: boolean;
   canSearchPortal: boolean;
   canRequestPortalPerms: boolean;
   canProposeRegulation: boolean;
@@ -48,6 +52,16 @@ export interface SessionCapabilities {
   canFinalizeKpi: boolean;
   canViewAudit: boolean;
   canManageSettings: boolean;
+  canRecordConduct?: boolean;
+  canViewAllConduct?: boolean;
+  canSubmitDossier?: boolean;
+  canAccessCouncil?: boolean;
+  canConcludeCouncil?: boolean;
+  canSubmitInitiative?: boolean;
+  canReviewInitiative?: boolean;
+  canViewGraphics?: boolean;
+  canManageGraphics?: boolean;
+  isObserver?: boolean;
 }
 
 interface AuthContextValue {
@@ -74,19 +88,84 @@ export function useAuth() {
   return useContext(AuthContext);
 }
 
-const NAV_ITEMS = [
-  { href: "/", label: "Tổng quan", icon: LayoutDashboard, match: (p: string) => p === "/" },
-  { href: "/missions", label: "Nhiệm vụ", icon: Briefcase, match: (p: string) => p.startsWith("/missions") },
-  { href: "/my-work", label: "Việc của tôi", icon: CheckSquare, match: (p: string) => p.startsWith("/my-work") },
-  { href: "/members", label: "Thành viên", icon: Users, match: (p: string) => p.startsWith("/members") },
-  { href: "/reports", label: "KPI & báo cáo", icon: BarChart3, match: (p: string) => p.startsWith("/reports") },
+interface NavItemDef {
+  href: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  match: (p: string) => boolean;
+  visible?: (actor: SessionActor, cap: SessionCapabilities | null) => boolean;
+}
+
+const NAV_ITEMS: NavItemDef[] = [
+  {
+    href: "/",
+    label: "Tổng quan",
+    icon: LayoutDashboard,
+    match: (p: string) => p === "/",
+    visible: (a) => a.role !== "OBSERVER",
+  },
+  {
+    href: "/missions",
+    label: "Nhiệm vụ",
+    icon: Briefcase,
+    match: (p: string) => p.startsWith("/missions"),
+  },
+  {
+    href: "/my-work",
+    label: "Việc của tôi",
+    icon: CheckSquare,
+    match: (p: string) => p.startsWith("/my-work"),
+    visible: (a) => a.role !== "OBSERVER",
+  },
+  {
+    href: "/council",
+    label: "Thẩm tra & HĐĐH",
+    icon: Scale,
+    match: (p: string) => p.startsWith("/council"),
+    visible: (a, c) => a.role !== "OBSERVER" && Boolean(c?.canAccessCouncil || c?.canRecordConduct),
+  },
+  {
+    href: "/initiatives",
+    label: "Sáng kiến & Số liệu",
+    icon: Lightbulb,
+    match: (p: string) => p.startsWith("/initiatives"),
+    visible: (a) => a.role !== "OBSERVER",
+  },
+  {
+    href: "/graphics",
+    label: "Kho Đồ họa",
+    icon: Palette,
+    match: (p: string) => p.startsWith("/graphics"),
+    visible: (a) => a.role !== "OBSERVER",
+  },
+  {
+    href: "/members",
+    label: "Thành viên",
+    icon: Users,
+    match: (p: string) => p.startsWith("/members"),
+    visible: (a) => a.role !== "OBSERVER",
+  },
+  {
+    href: "/reports",
+    label: "KPI & báo cáo",
+    icon: BarChart3,
+    match: (p: string) => p.startsWith("/reports"),
+    visible: (a) => a.role !== "OBSERVER",
+  },
   {
     href: "/regulations",
     label: "Quy chế",
     icon: BookOpenCheck,
     match: (p: string) => p.startsWith("/regulations") || p.startsWith("/approvals"),
+    visible: (a) => a.role !== "OBSERVER",
   },
-  { href: "/settings", label: "Cài đặt", icon: Settings, match: (p: string) => p.startsWith("/settings") },
+  {
+    href: "/settings",
+    label: "Cài đặt",
+    icon: Settings,
+    match: (p: string) => p.startsWith("/settings"),
+    visible: (a) => a.role !== "OBSERVER",
+  },
 ];
 
 export function WorkspaceShell({ children }: { children: React.ReactNode }) {
@@ -231,9 +310,10 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
           </div>
 
           <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
-            {NAV_ITEMS.map((item) => {
+            {NAV_ITEMS.filter((item) => !item.visible || item.visible(actor, capabilities)).map((item) => {
               const Icon = item.icon;
               const active = item.match(pathname);
+              const label = actor.role === "OBSERVER" && item.href === "/missions" ? "Nhiệm vụ hoàn thành" : item.label;
               return (
                 <Link
                   key={item.href}
@@ -246,7 +326,7 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
                   }`}
                 >
                   <Icon className={`h-4 w-4 ${active ? "text-blue-600" : "text-slate-400"}`} />
-                  <span>{item.label}</span>
+                  <span>{label}</span>
                 </Link>
               );
             })}
@@ -315,13 +395,15 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
                   </span>
                 )}
               </Link>
-              <Link
-                href={`/members/${actor.memberId}`}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700"
-                title={actor.displayName}
-              >
-                {actor.displayName.split(" ").slice(-1)[0]?.[0] ?? "U"}
-              </Link>
+              {actor.role !== "OBSERVER" && (
+                <Link
+                  href={`/members/${actor.memberId}`}
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700"
+                  title={actor.displayName}
+                >
+                  {actor.displayName.split(" ").slice(-1)[0]?.[0] ?? "U"}
+                </Link>
+              )}
             </div>
           </header>
 

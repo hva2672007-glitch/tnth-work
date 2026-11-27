@@ -5,6 +5,10 @@ import {
   can,
   canAssignToMember,
   isBoardLeadership,
+  isManagerRole,
+  isObserverRole,
+  isTeamLeadership,
+  isWorkerRole,
   requirePermission,
 } from "@/server/authorization/policy";
 import { writeActivity, writeAudit } from "@/server/audit/service";
@@ -13,6 +17,7 @@ import { AppError } from "@/server/errors";
 import {
   suggestUrgency,
   type CompletionMode,
+  type ConfidentialityLevel,
   type ImportanceLevel,
   type MemberRole,
   type MissionStatus,
@@ -41,6 +46,10 @@ export interface CreateTaskInput {
   assigneeIds?: string[];
   assigneeWeights?: Record<string, number>;
   predecessorTempKeys?: string[];
+  metricEnabled?: boolean;
+  metricUnit?: string;
+  metricTarget?: number | null;
+  metricPointsPerUnit?: number;
 }
 
 export interface CreateMissionInput {
@@ -49,6 +58,8 @@ export interface CreateMissionInput {
   description: string;
   expectedOutcome?: string;
   refs?: { label: string; url: string }[];
+  directiveAuthorities?: string[];
+  confidentiality?: ConfidentialityLevel;
   ownerId: string;
   teamIds?: string[];
   importance?: ImportanceLevel;
@@ -402,13 +413,13 @@ export async function createMission(actor: AuthActor, input: CreateMissionInput,
 
     const mInserted = await tx.query<{ id: string }>(
       `INSERT INTO missions (
-         code, group_id, title, description, expected_outcome, refs, owner_id, creator_id,
-         status, importance, urgency, urgency_override_reason, deadline_original, deadline_current,
+         code, group_id, title, description, expected_outcome, refs, directive_authorities, confidentiality,
+         owner_id, creator_id, status, importance, urgency, urgency_override_reason, deadline_original, deadline_current,
          starts_at, assigned_at, completion_mode, completion_mode_reason, schedule_id, occurrence_at
        ) VALUES (
-         $1, $2, $3, $4, $5, $6::jsonb, $7, $8,
-         $9, $10, $11, $12, $13, $13,
-         $14, $15, $16, $17, $18, $19
+         $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8,
+         $9, $10, $11, $12, $13, $14, $15, $15,
+         $16, $17, $18, $19, $20, $21
        ) RETURNING id`,
       [
         code,
@@ -417,6 +428,8 @@ export async function createMission(actor: AuthActor, input: CreateMissionInput,
         input.description.trim(),
         (input.expectedOutcome ?? "").trim(),
         JSON.stringify(input.refs ?? []),
+        JSON.stringify([...new Set((input.directiveAuthorities ?? []).map((s) => s.trim()).filter(Boolean))]),
+        input.confidentiality ?? "NORMAL",
         input.ownerId,
         actor.memberId,
         missionStatus,
@@ -478,11 +491,13 @@ export async function createMission(actor: AuthActor, input: CreateMissionInput,
         `INSERT INTO tasks (
            mission_id, code, title, description, deliverable, requires_artifact,
            owner_team_id, owner_id, reviewer_id, sort_order, submission_mode, required,
-           weight, urgency, importance, deadline_original, deadline_current, status
+           weight, urgency, importance, deadline_original, deadline_current, status,
+           metric_enabled, metric_unit, metric_target, metric_points_per_unit
          ) VALUES (
            $1, $2, $3, $4, $5, $6,
            $7, $8, $9, $10, $11, $12,
-           $13, $14, $15, $16, $16, $17
+           $13, $14, $15, $16, $16, $17,
+           $18, $19, $20, $21
          ) RETURNING id`,
         [
           missionId,
@@ -502,6 +517,10 @@ export async function createMission(actor: AuthActor, input: CreateMissionInput,
           t.importance ?? input.importance ?? "NORMAL",
           taskDeadline.toISOString(),
           taskStatus,
+          Boolean(t.metricEnabled),
+          (t.metricUnit ?? "").trim(),
+          t.metricTarget ?? null,
+          t.metricPointsPerUnit ?? 1,
         ],
       );
       const taskId = tInserted.rows[0].id;
@@ -778,8 +797,8 @@ export async function listMissions(
   where.push(scope.clause);
   params.push(...scope.params);
 
-  // Thành viên Bậc 04 không thấy bản nháp chưa giao
-  if (actor.role === "MEMBER") {
+  // Thành viên Bậc 04 & CTV Bậc 05 không thấy bản nháp chưa giao
+  if (isWorkerRole(actor.role)) {
     where.push(`m.status <> 'DRAFT'`);
   }
   if (filters?.groupId) {
@@ -824,6 +843,8 @@ export async function listMissions(
     status: MissionStatus;
     importance: ImportanceLevel;
     urgency: UrgencyLevel;
+    confidentiality: ConfidentialityLevel;
+    directive_authorities: unknown;
     deadline_original: Date;
     deadline_current: Date;
     completion_mode: CompletionMode;
@@ -836,7 +857,8 @@ export async function listMissions(
     team_names: string | null;
   }>(
     `SELECT m.id, m.code, m.group_id, tg.name AS group_name, tg.sort_order AS group_sort,
-            m.title, m.status, m.importance, m.urgency, m.deadline_original, m.deadline_current,
+            m.title, m.status, m.importance, m.urgency, m.confidentiality, m.directive_authorities,
+            m.deadline_original, m.deadline_current,
             m.completion_mode, m.owner_id, owner.display_name AS owner_name, creator.display_name AS creator_name,
             m.version,
             (SELECT count(*) FROM tasks t WHERE t.mission_id = m.id AND t.required = true AND t.status <> 'CANCELLED') AS total_required_tasks,
@@ -858,6 +880,7 @@ export async function listMissions(
   );
 
   const now = Date.now();
+  const observer = isObserverRole(actor.role);
   return rows.map((r) => ({
     id: r.id,
     code: r.code,
@@ -867,14 +890,16 @@ export async function listMissions(
     status: r.status,
     importance: r.importance,
     urgency: r.urgency,
+    confidentiality: r.confidentiality ?? "NORMAL",
+    directiveAuthorities: Array.isArray(r.directive_authorities) ? (r.directive_authorities as string[]) : [],
     deadlineOriginal: new Date(r.deadline_original).toISOString(),
     deadlineCurrent: new Date(r.deadline_current).toISOString(),
     isOverdue: !["DRAFT", "COMPLETED", "CANCELLED"].includes(r.status) && new Date(r.deadline_current).getTime() < now,
     completionMode: r.completion_mode,
-    ownerId: r.owner_id,
-    ownerName: r.owner_name,
-    creatorName: r.creator_name,
-    teamNames: r.team_names ?? "",
+    ownerId: observer ? "" : r.owner_id,
+    ownerName: observer ? "Ban Biên tập TNTH" : r.owner_name,
+    creatorName: observer ? "Ban Biên tập TNTH" : r.creator_name,
+    teamNames: observer ? "" : (r.team_names ?? ""),
     progress: {
       completed: Number(r.completed_required_tasks ?? 0),
       total: Number(r.total_required_tasks ?? 0),
@@ -894,6 +919,8 @@ export async function getMissionDetail(actor: AuthActor, missionId: string) {
     description: string;
     expected_outcome: string;
     refs: unknown;
+    directive_authorities: unknown;
+    confidentiality: ConfidentialityLevel;
     owner_id: string;
     owner_name: string;
     creator_id: string;
@@ -950,11 +977,16 @@ export async function getMissionDetail(actor: AuthActor, missionId: string) {
     missionOwnerId: mission.owner_id,
     missionTeamIds: teams.map((t) => t.id),
     missionParticipantIds: participants.map((p) => p.member_id),
+    missionStatus: mission.status,
   };
 
   requirePermission(actor, "mission.view", policyRes, "Bạn không có quyền xem nhiệm vụ này.");
-  if (mission.status === "DRAFT" && actor.role === "MEMBER") {
+  if (mission.status === "DRAFT" && isWorkerRole(actor.role)) {
     throw new AppError(403, "FORBIDDEN", "Nhiệm vụ đang ở trạng thái nháp.");
+  }
+  const observer = isObserverRole(actor.role);
+  if (observer && mission.status !== "COMPLETED") {
+    throw new AppError(403, "FORBIDDEN", "Tài khoản Ngoại lệ (Bậc 06) chỉ được xem kết quả của nhiệm vụ đã hoàn thành.");
   }
 
   const tasks = await query<{
@@ -983,6 +1015,10 @@ export async function getMissionDetail(actor: AuthActor, missionId: string) {
     hold_reason: string | null;
     completed_at: Date | null;
     version: number;
+    metric_enabled: boolean;
+    metric_unit: string;
+    metric_target: string | number | null;
+    metric_points_per_unit: string | number;
   }>(
     `SELECT t.*, tm.name AS owner_team_name, ow.display_name AS owner_name, rv.display_name AS reviewer_name
      FROM tasks t
@@ -1016,6 +1052,8 @@ export async function getMissionDetail(actor: AuthActor, missionId: string) {
           effective_submitted_at: Date | null;
           reviewed_at: Date | null;
           transfer_reason: string | null;
+          revision_count: number;
+          needs_reassignment: boolean;
           version: number;
         }>(
           `SELECT ta.*, m.display_name AS member_name, m.role AS member_role
@@ -1238,52 +1276,65 @@ export async function getMissionDetail(actor: AuthActor, missionId: string) {
     title: mission.title,
     description: mission.description,
     expectedOutcome: mission.expected_outcome,
-    refs: Array.isArray(mission.refs) ? mission.refs : [],
-    ownerId: mission.owner_id,
-    ownerName: mission.owner_name,
-    creatorId: mission.creator_id,
-    creatorName: mission.creator_name,
+    refs: observer ? [] : Array.isArray(mission.refs) ? mission.refs : [],
+    directiveAuthorities: Array.isArray(mission.directive_authorities)
+      ? (mission.directive_authorities as string[])
+      : [],
+    confidentiality: mission.confidentiality ?? "NORMAL",
+    observerMode: observer,
+    ownerId: observer ? "" : mission.owner_id,
+    ownerName: observer ? "Ban Biên tập TNTH" : mission.owner_name,
+    creatorId: observer ? "" : mission.creator_id,
+    creatorName: observer ? "Ban Biên tập TNTH" : mission.creator_name,
     status: mission.status,
-    previousStatus: mission.previous_status,
+    previousStatus: observer ? null : mission.previous_status,
     importance: mission.importance,
     urgency: mission.urgency,
-    urgencyOverrideReason: mission.urgency_override_reason,
+    urgencyOverrideReason: observer ? null : mission.urgency_override_reason,
     deadlineOriginal: new Date(mission.deadline_original).toISOString(),
     deadlineCurrent: new Date(mission.deadline_current).toISOString(),
     isOverdue: !["DRAFT", "COMPLETED", "CANCELLED"].includes(mission.status) && new Date(mission.deadline_current).getTime() < nowMs,
     startsAt: mission.starts_at ? new Date(mission.starts_at).toISOString() : null,
     assignedAt: mission.assigned_at ? new Date(mission.assigned_at).toISOString() : null,
     completionMode: mission.completion_mode,
-    completionModeReason: mission.completion_mode_reason,
+    completionModeReason: observer ? null : mission.completion_mode_reason,
     completedAt: mission.completed_at ? new Date(mission.completed_at).toISOString() : null,
-    holdUntil: mission.hold_until ? new Date(mission.hold_until).toISOString() : null,
-    holdReason: mission.hold_reason,
-    cancelReason: mission.cancel_reason,
+    holdUntil: observer ? null : mission.hold_until ? new Date(mission.hold_until).toISOString() : null,
+    holdReason: observer ? null : mission.hold_reason,
+    cancelReason: observer ? null : mission.cancel_reason,
     version: mission.version,
-    teams,
+    teams: observer ? [] : teams,
     completion: completionEval,
     permissions: {
-      canManage: can(actor, "mission.manage", policyRes),
-      canComplete: can(actor, "mission.complete", policyRes) && completionEval.canComplete && mission.status !== "COMPLETED" && mission.status !== "CANCELLED" && mission.status !== "DRAFT",
+      canManage: !observer && can(actor, "mission.manage", policyRes),
+      canComplete:
+        !observer &&
+        can(actor, "mission.complete", policyRes) &&
+        completionEval.canComplete &&
+        mission.status !== "COMPLETED" &&
+        mission.status !== "CANCELLED" &&
+        mission.status !== "DRAFT",
     },
     tasks: tasks.map((t) => {
-      const tAssigns = assignments.filter((a) => a.task_id === t.id);
-      const tSubs = submissions.filter((s) => s.task_id === t.id);
-      const tDeps = deps.filter((d) => d.task_id === t.id);
+      const tAssigns = observer ? [] : assignments.filter((a) => a.task_id === t.id);
+      const tSubs = submissions
+        .filter((s) => s.task_id === t.id)
+        .filter((s) => (!observer ? true : s.state === "APPROVED"));
+      const tDeps = observer ? [] : deps.filter((d) => d.task_id === t.id);
       const blockedBy = tDeps.filter((d) => d.pred_status !== "COMPLETED");
       return {
         id: t.id,
         code: t.code,
         title: t.title,
-        description: t.description,
+        description: observer ? "" : t.description,
         deliverable: t.deliverable,
         requiresArtifact: t.requires_artifact,
-        ownerTeamId: t.owner_team_id,
-        ownerTeamName: t.owner_team_name,
-        ownerId: t.owner_id,
-        ownerName: t.owner_name,
-        reviewerId: t.reviewer_id,
-        reviewerName: t.reviewer_name,
+        ownerTeamId: observer ? "" : t.owner_team_id,
+        ownerTeamName: observer ? "Ban Biên tập TNTH" : t.owner_team_name,
+        ownerId: observer ? "" : t.owner_id,
+        ownerName: observer ? "" : t.owner_name,
+        reviewerId: observer ? null : t.reviewer_id,
+        reviewerName: observer ? null : t.reviewer_name,
         sortOrder: t.sort_order,
         submissionMode: t.submission_mode,
         required: t.required,
@@ -1296,13 +1347,20 @@ export async function getMissionDetail(actor: AuthActor, missionId: string) {
         status: t.status,
         completedAt: t.completed_at ? new Date(t.completed_at).toISOString() : null,
         version: t.version,
+        metricEnabled: Boolean(t.metric_enabled),
+        metricUnit: t.metric_unit ?? "",
+        metricTarget: t.metric_target !== null && t.metric_target !== undefined ? Number(t.metric_target) : null,
+        metricPointsPerUnit: Number(t.metric_points_per_unit ?? 1),
         canManageTask:
-          isBoardLeadership(actor.role) ||
-          (actor.role === "TEAM_LEAD" &&
-            (actor.leadTeamIds.includes(t.owner_team_id) || t.owner_id === actor.memberId || mission.creator_id === actor.memberId)),
-        supervisors: supervisors
-          .filter((s) => s.task_id === t.id)
-          .map((s) => ({ memberId: s.member_id, displayName: s.display_name })),
+          !observer &&
+          (isBoardLeadership(actor.role) ||
+            (isTeamLeadership(actor.role) &&
+              (actor.leadTeamIds.includes(t.owner_team_id) || t.owner_id === actor.memberId || mission.creator_id === actor.memberId))),
+        supervisors: observer
+          ? []
+          : supervisors
+              .filter((s) => s.task_id === t.id)
+              .map((s) => ({ memberId: s.member_id, displayName: s.display_name })),
         dependencies: tDeps.map((d) => ({
           taskId: d.predecessor_task_id,
           code: d.pred_code,
@@ -1327,6 +1385,8 @@ export async function getMissionDetail(actor: AuthActor, missionId: string) {
             evaluationDeadline: new Date(a.evaluation_deadline).toISOString(),
             lateAgainstOriginalDeadline: Boolean(a.late_against_original_deadline),
             extensionCount: approvedCount,
+            revisionCount: Number(a.revision_count ?? 0),
+            needsReassignment: Boolean(a.needs_reassignment),
             pendingExtension: pendingExt
               ? {
                   id: pendingExt.id,
@@ -1345,7 +1405,7 @@ export async function getMissionDetail(actor: AuthActor, missionId: string) {
         }),
         submissions: tSubs.map((sv) => ({
           submissionId: sv.submission_id,
-          assignmentId: sv.assignment_id,
+          assignmentId: observer ? null : sv.assignment_id,
           versionId: sv.version_id,
           versionNo: sv.version_no,
           submissionType: sv.submission_type,
@@ -1353,25 +1413,27 @@ export async function getMissionDetail(actor: AuthActor, missionId: string) {
           textContent: sv.text_content,
           links: Array.isArray(sv.links) ? sv.links : [],
           submittedAt: new Date(sv.submitted_at).toISOString(),
-          submittedBy: sv.submitted_by,
-          submittedByName: sv.submitted_by_name,
+          submittedBy: observer ? "" : sv.submitted_by,
+          submittedByName: observer ? "Ban Biên tập TNTH" : sv.submitted_by_name,
           state: sv.state,
           canReview:
+            !observer &&
             sv.state === "SUBMITTED" &&
             can(actor, "task.review", {
               ownerTeamId: t.owner_team_id,
               taskReviewerId: t.reviewer_id,
               taskSubmitterId: sv.submitted_by,
             }),
-          review: sv.review_id
-            ? {
-                id: sv.review_id,
-                decision: sv.review_decision,
-                note: sv.review_note,
-                reviewerName: sv.reviewer_name,
-                reviewedAt: sv.reviewed_at ? new Date(sv.reviewed_at).toISOString() : null,
-              }
-            : null,
+          review:
+            !observer && sv.review_id
+              ? {
+                  id: sv.review_id,
+                  decision: sv.review_decision,
+                  note: sv.review_note,
+                  reviewerName: sv.reviewer_name,
+                  reviewedAt: sv.reviewed_at ? new Date(sv.reviewed_at).toISOString() : null,
+                }
+              : null,
           files: subFiles
             .filter((f) => f.submission_version_id === sv.version_id)
             .map((f) => ({
@@ -1391,10 +1453,10 @@ export async function getMissionDetail(actor: AuthActor, missionId: string) {
       channelName: r.custom_channel_name ? `${r.channel_name}: ${r.custom_channel_name}` : r.channel_name,
       required: r.required,
       requiredCount: r.required_count,
-      confirmedBy: r.confirmed_by,
-      confirmedByName: r.confirmed_by_name,
+      confirmedBy: observer ? null : r.confirmed_by,
+      confirmedByName: observer ? null : r.confirmed_by_name,
       confirmedAt: r.confirmed_at ? new Date(r.confirmed_at).toISOString() : null,
-      note: r.note,
+      note: observer ? "" : r.note,
       links: pubLinks
         .filter((l) => l.requirement_id === r.id)
         .map((l) => ({
@@ -1402,65 +1464,73 @@ export async function getMissionDetail(actor: AuthActor, missionId: string) {
           url: l.url,
           title: l.title,
           postedAt: l.posted_at ? new Date(l.posted_at).toISOString() : null,
-          createdByName: l.created_by_name,
+          createdByName: observer ? "Ban Biên tập TNTH" : l.created_by_name,
           createdAt: new Date(l.created_at).toISOString(),
-          note: l.note,
+          note: observer ? "" : l.note,
         })),
     })),
-    comments: comments.map((c) => ({
-      id: c.id,
-      taskId: c.task_id,
-      authorId: c.author_id,
-      authorName: c.author_name,
-      authorRole: c.author_role,
-      body: c.body,
-      createdAt: new Date(c.created_at).toISOString(),
-      editedAt: c.edited_at ? new Date(c.edited_at).toISOString() : null,
-    })),
-    activities: activities.map((a) => ({
-      id: a.id,
-      taskId: a.task_id,
-      action: a.action,
-      summary: a.summary,
-      actorName: a.actor_name,
-      createdAt: new Date(a.created_at).toISOString(),
-    })),
-    deadlineHistory: deadlineHist.map((d) => ({
-      id: d.id,
-      taskId: d.task_id,
-      assignmentId: d.assignment_id,
-      assigneeName: d.assignee_name,
-      approvedException: d.approved_exception,
-      oldDeadline: new Date(d.old_deadline).toISOString(),
-      newDeadline: new Date(d.new_deadline).toISOString(),
-      reason: d.reason,
-      changedByName: d.changed_by_name,
-      changedAt: new Date(d.changed_at).toISOString(),
-    })),
-    extensionRequests: extensionReqs.map((er) => ({
-      id: er.id,
-      assignmentId: er.assignment_id,
-      taskId: er.task_id,
-      taskCode: er.task_code,
-      taskTitle: er.task_title,
-      ownerTeamId: er.owner_team_id,
-      requesterId: er.requester_id,
-      requesterName: er.requester_name,
-      currentDeadline: new Date(er.current_deadline).toISOString(),
-      requestedDeadline: new Date(er.requested_deadline).toISOString(),
-      reason: er.reason,
-      status: er.status,
-      approvedDeadline: er.approved_deadline ? new Date(er.approved_deadline).toISOString() : null,
-      resolverId: er.resolver_id,
-      resolverName: er.resolver_name,
-      resolverNote: er.resolver_note,
-      resolvedAt: er.resolved_at ? new Date(er.resolved_at).toISOString() : null,
-      createdAt: new Date(er.created_at).toISOString(),
-      canResolve:
-        er.status === "PENDING" &&
-        er.requester_id !== actor.memberId &&
-        (isBoardLeadership(actor.role) || (actor.role === "TEAM_LEAD" && actor.leadTeamIds.includes(er.owner_team_id))),
-    })),
+    comments: observer
+      ? []
+      : comments.map((c) => ({
+          id: c.id,
+          taskId: c.task_id,
+          authorId: c.author_id,
+          authorName: c.author_name,
+          authorRole: c.author_role,
+          body: c.body,
+          createdAt: new Date(c.created_at).toISOString(),
+          editedAt: c.edited_at ? new Date(c.edited_at).toISOString() : null,
+        })),
+    activities: observer
+      ? []
+      : activities.map((a) => ({
+          id: a.id,
+          taskId: a.task_id,
+          action: a.action,
+          summary: a.summary,
+          actorName: a.actor_name,
+          createdAt: new Date(a.created_at).toISOString(),
+        })),
+    deadlineHistory: observer
+      ? []
+      : deadlineHist.map((d) => ({
+          id: d.id,
+          taskId: d.task_id,
+          assignmentId: d.assignment_id,
+          assigneeName: d.assignee_name,
+          approvedException: d.approved_exception,
+          oldDeadline: new Date(d.old_deadline).toISOString(),
+          newDeadline: new Date(d.new_deadline).toISOString(),
+          reason: d.reason,
+          changedByName: d.changed_by_name,
+          changedAt: new Date(d.changed_at).toISOString(),
+        })),
+    extensionRequests: observer
+      ? []
+      : extensionReqs.map((er) => ({
+          id: er.id,
+          assignmentId: er.assignment_id,
+          taskId: er.task_id,
+          taskCode: er.task_code,
+          taskTitle: er.task_title,
+          ownerTeamId: er.owner_team_id,
+          requesterId: er.requester_id,
+          requesterName: er.requester_name,
+          currentDeadline: new Date(er.current_deadline).toISOString(),
+          requestedDeadline: new Date(er.requested_deadline).toISOString(),
+          reason: er.reason,
+          status: er.status,
+          approvedDeadline: er.approved_deadline ? new Date(er.approved_deadline).toISOString() : null,
+          resolverId: er.resolver_id,
+          resolverName: er.resolver_name,
+          resolverNote: er.resolver_note,
+          resolvedAt: er.resolved_at ? new Date(er.resolved_at).toISOString() : null,
+          createdAt: new Date(er.created_at).toISOString(),
+          canResolve:
+            er.status === "PENDING" &&
+            er.requester_id !== actor.memberId &&
+            (isBoardLeadership(actor.role) || (isTeamLeadership(actor.role) && actor.leadTeamIds.includes(er.owner_team_id))),
+        })),
   };
 }
 
@@ -2095,7 +2165,7 @@ export async function assignTaskMembers(
 
     const canManageThisTask =
       isBoardLeadership(actor.role) ||
-      (actor.role === "TEAM_LEAD" &&
+      (isTeamLeadership(actor.role) &&
         (actor.leadTeamIds.includes(task.owner_team_id) ||
           task.owner_id === actor.memberId ||
           task.mission_creator_id === actor.memberId));
@@ -2330,7 +2400,7 @@ export async function addTaskToMission(
       missionTeamIds: teamRows.rows.map((r) => r.team_id),
     });
 
-    if (actor.role === "TEAM_LEAD" && !actor.leadTeamIds.includes(input.ownerTeamId)) {
+    if (isTeamLeadership(actor.role) && !actor.leadTeamIds.includes(input.ownerTeamId)) {
       throw new AppError(403, "FORBIDDEN", "Trưởng/Phó tổ chỉ được tách thêm task cho tổ mình phụ trách.");
     }
 
@@ -2742,7 +2812,7 @@ export async function resolveDeadlineExtension(
 
     const canResolve =
       isBoardLeadership(actor.role) ||
-      (actor.role === "TEAM_LEAD" && actor.leadTeamIds.includes(req.owner_team_id));
+      (isTeamLeadership(actor.role) && actor.leadTeamIds.includes(req.owner_team_id));
     if (!canResolve) {
       throw new AppError(403, "FORBIDDEN", "Chỉ Trưởng/Phó tổ phụ trách hoặc Lãnh đạo Ban mới có quyền duyệt yêu cầu xin dời hạn.");
     }
@@ -2948,6 +3018,9 @@ export async function resolveDeadlineExtension(
 
 /** Danh sách Việc của tôi (mục 2.1 & 2.3) */
 export async function getMyWork(actor: AuthActor) {
+  if (isObserverRole(actor.role)) {
+    return { assignments: [], reviewQueue: [], delegationQueue: [], extensionQueue: [] };
+  }
   const rows = await query<{
     assignment_id: string;
     task_id: string;
@@ -3002,7 +3075,7 @@ export async function getMyWork(actor: AuthActor) {
 
   // Việc chờ duyệt nếu là lãnh đạo tổ / Ban
   const reviewQueue =
-    actor.role !== "MEMBER"
+    isManagerRole(actor.role)
       ? await query<{
           version_id: string;
           version_no: number;
@@ -3033,13 +3106,13 @@ export async function getMyWork(actor: AuthActor) {
                OR t.owner_team_id = ANY($3::uuid[])
              )
            ORDER BY sv.submitted_at ASC`,
-          [actor.memberId, ["HEAD", "ACTING_HEAD", "DEPUTY"].includes(actor.role), actor.leadTeamIds],
+          [actor.memberId, isBoardLeadership(actor.role), actor.leadTeamIds],
         )
       : [];
 
   // Hàng chờ phân công cho Tổ trưởng / Ban: các task đang mở nhưng chưa có ai thực hiện (hoặc tất cả đã từ chối)
   const delegationQueue =
-    actor.role !== "MEMBER"
+    isManagerRole(actor.role)
       ? await query<{
           task_id: string;
           task_code: string;
@@ -3076,13 +3149,13 @@ export async function getMyWork(actor: AuthActor) {
                OR t.owner_team_id = ANY($2::uuid[])
              )
            ORDER BY t.deadline_current ASC`,
-          [["HEAD", "ACTING_HEAD", "DEPUTY"].includes(actor.role), actor.leadTeamIds],
+          [isBoardLeadership(actor.role), actor.leadTeamIds],
         )
       : [];
 
   // Hàng chờ duyệt yêu cầu xin dời deadline cho Tổ trưởng / Ban
   const extensionQueue =
-    actor.role !== "MEMBER"
+    isManagerRole(actor.role)
       ? await query<{
           id: string;
           assignment_id: string;
@@ -3112,7 +3185,7 @@ export async function getMyWork(actor: AuthActor) {
              AND der.requester_id <> $1
              AND ($2::boolean = true OR t.owner_team_id = ANY($3::uuid[]))
            ORDER BY der.created_at ASC`,
-          [actor.memberId, ["HEAD", "ACTING_HEAD", "DEPUTY"].includes(actor.role), actor.leadTeamIds],
+          [actor.memberId, isBoardLeadership(actor.role), actor.leadTeamIds],
         )
       : [];
 

@@ -15,6 +15,8 @@ import {
   ACTIVITY_STATUS_LABELS,
   APPROVAL_STATUS_LABELS,
   ASSIGNMENT_STATUS_LABELS,
+  CONFIDENTIALITY_LABELS,
+  COUNCIL_STATUS_LABELS,
   IMPORTANCE_LABELS,
   MISSION_STATUS_LABELS,
   ROLE_LABELS,
@@ -23,6 +25,8 @@ import {
   type ActivityStatus,
   type ApprovalStatus,
   type AssignmentStatus,
+  type ConfidentialityLevel,
+  type CouncilItemStatus,
   type ImportanceLevel,
   type MemberRole,
   type MissionStatus,
@@ -117,13 +121,48 @@ export function RoleBadge({ role }: { role: MemberRole }) {
   const styles: Record<MemberRole, string> = {
     HEAD: "bg-blue-900 text-white",
     ACTING_HEAD: "bg-blue-700 text-white",
+    DEPUTY_INSPECTOR: "bg-purple-700 text-white",
     DEPUTY: "bg-blue-100 text-blue-900 border border-blue-200",
-    TEAM_LEAD: "bg-indigo-50 text-indigo-800 border border-indigo-200",
+    TEAM_LEAD: "bg-indigo-100 text-indigo-900 border border-indigo-200",
+    TEAM_DEPUTY: "bg-indigo-50 text-indigo-700 border border-indigo-200",
     MEMBER: "bg-slate-100 text-slate-700 border border-slate-200",
+    COLLABORATOR: "bg-teal-50 text-teal-800 border border-teal-200",
+    OBSERVER: "bg-amber-50 text-amber-800 border border-amber-300",
   };
   return (
     <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${styles[role]}`}>
       {ROLE_LABELS[role].code}
+    </span>
+  );
+}
+
+export function ConfidentialityBadge({ level }: { level?: ConfidentialityLevel | null }) {
+  const lv: ConfidentialityLevel = level ?? "NORMAL";
+  if (lv === "NORMAL") return null;
+  const styles: Record<Exclude<ConfidentialityLevel, "NORMAL">, string> = {
+    CONFIDENTIAL: "bg-amber-100 text-amber-900 border-amber-300",
+    TOP_SECRET: "bg-red-700 text-white border-red-800",
+  };
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-bold ${styles[lv]}`}>
+      <AlertTriangle className="h-3 w-3" />
+      {CONFIDENTIALITY_LABELS[lv].label}
+    </span>
+  );
+}
+
+export function CouncilStatusBadge({ status }: { status: CouncilItemStatus }) {
+  const styles: Record<CouncilItemStatus, string> = {
+    OPEN_FOR_OPINION: "bg-blue-50 text-blue-800 border-blue-200",
+    RED_ALERT: "bg-red-600 text-white border-red-700",
+    AWAITING_MEETING: "bg-amber-50 text-amber-900 border-amber-300",
+    COMPLETED: "bg-emerald-50 text-emerald-800 border-emerald-200",
+  };
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold ${styles[status]}`}>
+      {status === "RED_ALERT" && <AlertTriangle className="h-3 w-3" />}
+      {status === "COMPLETED" && <CheckCircle2 className="h-3 w-3" />}
+      {COUNCIL_STATUS_LABELS[status]}
     </span>
   );
 }

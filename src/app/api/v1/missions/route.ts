@@ -28,6 +28,10 @@ const TaskSchema = z.object({
   assigneeIds: z.array(z.string().uuid()).optional(),
   assigneeWeights: z.record(z.string(), z.number().positive()).optional(),
   predecessorTempKeys: z.array(z.string()).optional(),
+  metricEnabled: z.boolean().optional(),
+  metricUnit: z.string().max(80).optional(),
+  metricTarget: z.number().positive().nullable().optional(),
+  metricPointsPerUnit: z.number().positive().max(100).optional(),
 });
 
 const CreateMissionSchema = z.object({
@@ -36,6 +40,8 @@ const CreateMissionSchema = z.object({
   description: z.string().min(3, "Mô tả yêu cầu tối thiểu 3 ký tự.").max(8000),
   expectedOutcome: z.string().max(4000).optional(),
   refs: z.array(z.object({ label: z.string().min(1), url: z.string().url("Link Ref không hợp lệ.") })).optional(),
+  directiveAuthorities: z.array(z.string().min(1).max(200)).max(20).optional(),
+  confidentiality: z.enum(["NORMAL", "CONFIDENTIAL", "TOP_SECRET"]).optional(),
   ownerId: z.string().uuid("Chọn người chủ trì hợp lệ."),
   teamIds: z.array(z.string().uuid()).optional(),
   importance: z.enum(["KEY", "NORMAL"]).optional(),

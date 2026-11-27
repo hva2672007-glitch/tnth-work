@@ -1,6 +1,6 @@
 import { query } from "@/server/db";
 import type { AuthActor } from "@/server/auth/session";
-import { buildMissionScopeClause } from "@/server/authorization/policy";
+import { buildMissionScopeClause, isObserverRole, isWorkerRole } from "@/server/authorization/policy";
 import { detectBottlenecks } from "@/server/reports/bottlenecks";
 import { currentVnYearMonth, vnMonthRange } from "@/lib/date";
 
@@ -26,7 +26,7 @@ export async function getDashboardSummary(
   const params: unknown[] = [...scope.params];
   const where: string[] = [scope.clause];
 
-  if (actor.role === "MEMBER") {
+  if (isWorkerRole(actor.role)) {
     where.push(`m.status <> 'DRAFT'`);
   }
   if (!filters?.allTime) {
@@ -173,7 +173,9 @@ export async function getDashboardSummary(
       isOverdue: new Date(t.deadline_current).getTime() < now,
     }));
 
-  const bottlenecks = await detectBottlenecks(actor, { teamId: filters?.teamId, groupId: filters?.groupId });
+  const bottlenecks = isObserverRole(actor.role)
+    ? { items: [], countsByCode: {} }
+    : await detectBottlenecks(actor, { teamId: filters?.teamId, groupId: filters?.groupId });
 
   return {
     period: {
